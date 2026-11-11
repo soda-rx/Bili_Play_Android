@@ -1,0 +1,4 @@
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="download_music" path="Music/downloads/" />
+    <files-path name="download_fallback" path="downloads/" />
+</paths>

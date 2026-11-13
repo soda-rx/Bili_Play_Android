@@ -1,6 +1,8 @@
 param([Parameter(Mandatory)][string]$ToolchainFile, [switch]$VerifyRelease, [switch]$Deliver)
 $ErrorActionPreference = 'Stop'
 $androidRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+& python -B (Join-Path $PSScriptRoot 'check_release.py')
+if ($LASTEXITCODE -ne 0) { throw '版本预检未通过。' }
 $toolchain = Get-Content -LiteralPath $ToolchainFile -Raw | ConvertFrom-Json
 $env:JAVA_HOME = $toolchain.javaHome
 $env:ANDROID_HOME = $toolchain.sdk
@@ -48,12 +50,11 @@ try {
     & (Join-Path $PSScriptRoot 'Check-Privacy.ps1') -Apk $apk
     if ($Deliver) {
         $version = ((Get-Content -LiteralPath (Join-Path $androidRoot 'version.properties') | Where-Object { $_ -like 'versionName=*' }) -split '=',2)[1]
-        if ($version -notmatch '^\d+\.\d+\.\d+$') { throw '版本号格式无效。' }
         $desktop = [Environment]::GetFolderPath('Desktop')
         if (-not (Test-Path -LiteralPath $desktop -PathType Container)) { throw '桌面目录不可用。' }
-        $delivery = Join-Path $desktop "Bili_Play_Android_$($version).APK"
+        $delivery = Join-Path $desktop "Bili_Play_Android_$($version).apk"
         if (Test-Path -LiteralPath $delivery) { throw '目标APK已存在，停止以免覆盖用户文件。' }
-        $signed = Join-Path $androidRoot "app/build/outputs/apk/development/release/Bili_Play_Android_$($version).APK"
+        $signed = Join-Path $androidRoot "app/build/outputs/apk/development/release/Bili_Play_Android_$($version).apk"
         $apksigner = Join-Path $toolchain.sdk 'build-tools/36.0.0/apksigner.bat'
         & $apksigner sign --ks $env:BILIPLAY_DEVELOPMENT_KEYSTORE --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out $signed $releaseApk
         if ($LASTEXITCODE -ne 0) { throw 'APK 签名失败。' }

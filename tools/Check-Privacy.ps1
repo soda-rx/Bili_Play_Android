@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $findings = [Collections.Generic.List[string]]::new()
-$textExtensions = @('.kt','.kts','.ps1','.md','.txt','.json','.xml','.properties','.yml','.yaml','.cmd','.bat')
+$textExtensions = @('.kt','.kts','.ps1','.md','.txt','.json','.xml','.properties','.yml','.yaml','.cmd','.bat','.py')
 $privatePattern = '-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16}'
 $cookiePattern = '(?i)(?:SESSDATA|bili_jct)[ ]*[=:][ ]*([A-Za-z0-9_%+./-]{8,})'
 function Check-Text([string]$name, [string]$body, [bool]$syntheticTest) {

@@ -27,3 +27,7 @@ session.*
 *.sqlite-wal
 *.sqlite-shm
 *.trace
+
+# Python release checks (run with -B to avoid bytecode)
+__pycache__/
+*.py[cod]

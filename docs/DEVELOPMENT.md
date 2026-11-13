@@ -18,13 +18,15 @@
 ./tools/Build-Android.ps1 -ToolchainFile <工程外的toolchain.json> -VerifyRelease
 ```
 
-运行离线回归、开发Debug/R8 Release及两种Lint，验证包身份、显示名和隐私，最后自动清理生成目录。交付时加 -Deliver，只在桌面根目录输出 Bili_Play_Android_<版本>.APK 单文件，不创建文件夹或附带文件；协议/许可保留在应用内，不自动安装。
+运行离线回归、开发Debug/R8 Release及两种Lint，验证包身份、显示名和隐私，最后自动清理生成目录。交付时加 -Deliver，只在桌面根目录输出 Bili_Play_Android_<版本>.apk 单文件，不创建文件夹或附带文件；协议/许可保留在应用内，不自动安装。
 
 开发构建必须显式 -PDevelopmentBuild=true，身份 io.github.sodarx.biliplay.development；正式构建必须显式 false，签名密钥在工程外。两种构建均显示Bili Play，各账号凭据/记录/下载互相隔离。禁止日用数据进入源码、测试或安装包，不输出敏感值。
 
 
 ## 发布
 
-测试完成后清理生成物并检查源码/暂存内容/APK隐私。安装包只放桌面根目录：`Bili_Play_Android_<版本>.APK`，不附带文件。不自动安装，不清理用户数据。
+测试完成后清理生成物并检查源码/暂存内容/APK隐私。安装包只放桌面根目录：`Bili_Play_Android_<版本>.apk`，不附带文件。不自动安装，不清理用户数据。
 
-Git Tag不带v（例如`0.2.33`）；附注Tag说明`Bili Play v0.2.33`。推送代码与Tag不自动创建GitHub Release。MIT及第三方授权必须保留，见根目录LICENSE、third_party及应用内协议/许可。
+Git Tag不带v（例如`0.2.33`）；附注Tag说明`Bili Play Android v0.2.33`。推送代码与Tag不自动创建GitHub Release。MIT及第三方授权必须保留，见根目录LICENSE、third_party及应用内协议/许可。
+
+详细发布规则、版本递增、Release 标题、预发布和附件校验见 [RELEASING.md](../RELEASING.md)。现有 Build-Android.ps1 交付的是 development 验收包，不是正式发布流水线。

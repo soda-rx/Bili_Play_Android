@@ -136,25 +136,3 @@ object CoverPresentation {
             bottom > top &&
             top >= minimumTop
 }
-
-object LikedSelection {
-    fun select(
-        pool: List<Track>,
-        previous: List<Track> = emptyList(),
-        offset: Int = 0,
-    ): List<Track> {
-        val unique = pool.distinctBy { it.key }
-        if (unique.isEmpty()) return emptyList()
-        val shift = Math.floorMod(offset, unique.size)
-        val rotated = unique.drop(shift) + unique.take(shift)
-        val keys = previous.map { it.key }.toSet()
-        fun creator(track: Track) =
-            if (track.uploaderId > 0) "uid:${track.uploaderId}" else "name:${track.uploader}"
-        val previousCreators = previous.map(::creator).toSet()
-        val ranked =
-            rotated.sortedWith(
-                compareBy<Track> { creator(it) in previousCreators }.thenBy { it.key in keys }
-            )
-        return ranked.distinctBy(::creator).take(3)
-    }
-}

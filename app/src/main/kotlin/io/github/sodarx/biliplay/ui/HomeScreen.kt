@@ -78,7 +78,8 @@ internal fun Home(state: AppState, model: BiliPlayViewModel) {
     ) {
         LazyVerticalStaggeredGrid(
             state = grid,
-            columns = StaggeredGridCells.Fixed(2),
+            columns = StaggeredGridCells.Fixed(AdaptiveLayout.homeColumns(
+                androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat())),
             contentPadding =
                 PaddingValues(
                     start = 16.dp,

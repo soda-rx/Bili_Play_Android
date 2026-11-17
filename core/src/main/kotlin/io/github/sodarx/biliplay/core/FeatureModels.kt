@@ -43,6 +43,7 @@ data class Comment(
     val replies: Long = 0,
     val reaction: Int = 0,
     val pinned: Boolean = false,
+    val pictures: List<CommentPicture> = emptyList(),
 )
 
 data class Emote(val text: String, val url: String)
@@ -60,6 +61,7 @@ data class Notification(
     val url: String = "",
     val talkerId: Long = 0,
     val sessionType: Int = 1,
+    val targetImage: String = "",
 )
 
 data class NotificationPage(

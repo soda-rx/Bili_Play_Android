@@ -1,5 +1,8 @@
 {
   "platform": "android",
   "product": "Bili Play Android",
-  "assetPrefix": "Bili_Play_Android"
+  "assetPrefix": "Bili_Play_Android",
+  "developmentSignerSha256": "deee5396960058b640cb87b89ab038dc81c97551595963ba7bb856a2cdb2b889",
+  "productionPackageId": "io.github.sodarx.biliplay",
+  "productionSignerSha256": "64a23d155fab4dc7da2a9716aad55657c48ed9b9db8fda490fb99d07b4976df3"
 }

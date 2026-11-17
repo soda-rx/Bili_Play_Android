@@ -47,12 +47,13 @@ suspend fun BilibiliApi.folders(uid: Long): List<Folder> {
     return (own + collected).distinctBy { it.id }
 }
 
-suspend fun BilibiliApi.folderTracks(id: Long, page: Int = 1): Page<Track> {
+suspend fun BilibiliApi.folderTracks(id: Long, page: Int = 1, keyword: String = ""): Page<Track> {
     val d =
         get(
             "x/v3/fav/resource/list",
             mapOf(
                 "media_id" to "$id",
+                "keyword" to keyword.trim(),
                 "pn" to "$page",
                 "ps" to "20",
                 "order" to "mtime",
@@ -258,5 +259,58 @@ suspend fun BilibiliApi.searchPage(keyword: String, page: Int = 1): Page<Track> 
 
 suspend fun BilibiliApi.uploaderProfile(uid: Long): Uploader {
     val d = get("x/space/wbi/acc/info", mapOf("mid" to "$uid"), true)
-    return Uploader(uid, d.optString("name"), d.optString("face"), d.optString("sign"))
+    val returned = d.optLong("mid", uid)
+    if (returned != uid) throw ApiFailure(-1, "个人空间返回的用户与所选用户不一致")
+    val fans =
+        try {
+            get("x/relation/stat", mapOf("vmid" to "$uid")).optLong("follower").coerceAtLeast(0)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            0L
+        }
+    return Uploader(
+        uid,
+        d.optString("name"),
+        d.optString("face"),
+        d.optString("sign"),
+        fans,
+        d.optLong("videos").coerceAtLeast(0),
+    )
+}
+
+/**
+ * Batch identity cards used by the official web client when get_sessions omits a talker's name
+ * or avatar. Every returned card must match its requested uid; unknown entries are ignored.
+ */
+suspend fun BilibiliApi.userCards(uids: Collection<Long>): Map<Long, Pair<String, String>> {
+    val cards = mutableMapOf<Long, Pair<String, String>>()
+    val pending = mutableListOf<Long>()
+    for (uid in uids.filter { it > 0 }.distinct()) {
+        val cached = userCardCache[uid]
+        if (cached == null) pending += uid
+        else if (cached.first.isNotEmpty() || cached.second.isNotEmpty()) cards[uid] = cached
+    }
+    for (batch in pending.chunked(50)) {
+        val data =
+            get(
+                "x/polymer/pc-electron/v1/user/cards",
+                mapOf(
+                    "uids" to batch.joinToString(","),
+                    "build" to "0",
+                    "mobi_app" to "web",
+                ),
+            )
+        for (uid in batch) {
+            val row = data.optJSONObject("$uid")
+            val mid = row?.optLong("mid", 0) ?: 0
+            val name = row?.let { clean(it.optString("name")) }.orEmpty()
+            val face = row?.let { image(it.optString("face")) }.orEmpty()
+            val usable = row != null && (mid == 0L || mid == uid) && (name.isNotEmpty() || face.isNotEmpty())
+            val card = if (usable) name to face else "" to ""
+            userCardCache[uid] = card
+            if (usable) cards[uid] = card
+        }
+    }
+    return cards
 }

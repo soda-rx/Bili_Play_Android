@@ -67,18 +67,20 @@ internal fun LyricsScreen(s: AppState, m: BiliPlayViewModel) {
             remember(list) { derivedStateOf { list.layoutInfo.viewportSize.height } }
         LaunchedEffect(dragging, s.current?.key) {
             if (dragging) m.followLyrics(false)
-            else if (!s.followLyrics) {
-                snapshotFlow { list.isScrollInProgress }.first { !it }
-                kotlinx.coroutines.delay(3000)
-                m.followLyrics(true)
-            }
+        }
+        // 手动划走后不立即抢回；播放进入下一句时自动回到当前播放行（Issue：播放下句自动聚焦）。
+        LaunchedEffect(active, s.followLyrics) {
+            if (active < 0 || s.followLyrics || dragging) return@LaunchedEffect
+            snapshotFlow { list.isScrollInProgress }.first { !it }
+            if (!s.followLyrics) m.followLyrics(true)
         }
         val lyricSpring = spring<Float>(dampingRatio = .72f, stiffness = 188f)
         var scrollVelocity by remember { mutableFloatStateOf(0f) }
         LaunchedEffect(active, s.followLyrics, viewportHeight) {
             if (s.followLyrics && active >= 0) {
+                // 从划走位置回到当前行时使用滚动动画，而不是瞬移后再生硬补齐。
                 if (list.layoutInfo.visibleItemsInfo.none { it.index == active })
-                    list.scrollToItem(
+                    list.animateScrollToItem(
                         active,
                         -(list.layoutInfo.viewportSize.height * .22f).toInt(),
                     )
@@ -224,12 +226,33 @@ internal fun PlayerPageContent(
     }
     Box(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 4.dp)) {
-            if (maxWidth > maxHeight && maxWidth >= 600.dp)
-                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                    media(Modifier.weight(1f).fillMaxHeight())
-                    controls(Modifier.weight(1f).verticalScroll(rememberScrollState()))
+            if (AdaptiveLayout.splitPlayer(maxWidth.value, maxHeight.value)) {
+                val splitCoverHeight = minOf(maxHeight * .54f, maxWidth * .43f).coerceAtLeast(100.dp)
+                LaunchedEffect(s.playerSession, isCurrent) {
+                    if (isCurrent) {
+                        if (s.playerLyrics) m.setPlayerLyrics(false, s.playerSession, s.current.key)
+                        if (s.playerDemoPending) m.finishPlayerDemo()
+                    }
                 }
-            else if (maxHeight < 440.dp) {
+                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Column(Modifier.weight(.46f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        PlayerMediaPager(s, m, sharedArtwork, isCurrent,
+                            Modifier.fillMaxWidth().height(splitCoverHeight),
+                            coverOnly = true)
+                        controls()
+                    }
+                    Column(Modifier.weight(.54f).fillMaxHeight()) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("歌词", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            IconButton(onClick = { m.dialog("subtitleLanguage") }, enabled = s.subtitleTracks.isNotEmpty()) {
+                                Icon(Icons.Default.Translate, "字幕语言")
+                            }
+                        }
+                        Box(Modifier.weight(1f)) { if (isCurrent) LyricsScreen(s, m) }
+                    }
+                }
+            } else if (maxHeight < 440.dp) {
                 val compactMediaHeight = minOf(180.dp, maxHeight * .42f)
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     media(Modifier.fillMaxWidth().height(compactMediaHeight))
@@ -350,9 +373,20 @@ private fun PlayerControls(s: AppState, m: BiliPlayViewModel) {
             IconButton(onClick = { m.seekRelative(-10000) }) {
                 Icon(Icons.Default.Replay10, "快退十秒")
             }
-            IconButton(onClick = { m.next(-1) }) { Icon(Icons.Default.SkipPrevious, "上一首") }
+            // Issue #2:上一首/下一首使用更大的图标与触摸区域，和播放键形成清晰的层级。
+            IconButton(
+                onClick = { m.next(-1) },
+                modifier = Modifier.size(56.dp),
+            ) {
+                Icon(Icons.Default.SkipPrevious, "上一首", Modifier.size(32.dp))
+            }
             ExpressivePlayButton(s.playing, s.buffering, m::toggle)
-            IconButton(onClick = { m.next() }) { Icon(Icons.Default.SkipNext, "下一首") }
+            IconButton(
+                onClick = { m.next() },
+                modifier = Modifier.size(56.dp),
+            ) {
+                Icon(Icons.Default.SkipNext, "下一首", Modifier.size(32.dp))
+            }
             IconButton(onClick = { m.seekRelative(10000) }) {
                 Icon(Icons.Default.Forward10, "快进十秒")
             }

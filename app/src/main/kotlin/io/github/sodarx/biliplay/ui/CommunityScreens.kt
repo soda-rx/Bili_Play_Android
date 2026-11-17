@@ -26,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -33,6 +34,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import io.github.sodarx.biliplay.core.*
 import kotlinx.coroutines.launch
@@ -79,13 +81,47 @@ internal fun UploaderScreen(s: AppState, m: BiliPlayViewModel) {
                         maxLines = 3,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                FilledTonalButton(onClick = m::follow, enabled = !s.followingCurrentBusy) {
-                    Text(if (s.isFollowing) "已关注" else "关注")
-                }
+                if (!s.ownSpace)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FilledTonalButton(onClick = m::follow, enabled = !s.followingCurrentBusy) {
+                            Text(if (s.isFollowing) "已关注" else "关注")
+                        }
+                        if (u.followers > 0)
+                            Text(
+                                "${compactCount(u.followers)} 粉丝",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                    }
             }
         }
-        item { Text("全部投稿", Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium) }
-        items(s.uploaderTracks, key = { it.bvid }) { FeatureTrackRow(it, m) }
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (s.uploaderSelecting) "已选择 ${s.selectedUploaderTracks.size} 首" else "全部投稿",
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (s.uploaderSelecting)
+                    TextButton(onClick = m::selectAllUploaderTracks) { Text("全选") }
+            }
+        }
+        items(s.uploaderTracks, key = { it.bvid }) { track ->
+            SelectableTrackRow(
+                track,
+                selecting = s.uploaderSelecting,
+                selected = track.key in s.selectedUploaderTracks,
+                onToggle = { m.selectUploaderTrack(track.key) },
+                onPlay = { m.play(track) },
+                onMenu = { m.dialog("trackActions", track) },
+            )
+        }
         item { LoadMore(s.uploaderHasMore, s, m) }
         if (s.uploaderTracks.isEmpty() && !s.loading)
             item { EmptyContent(s.pageError ?: "暂无投稿", { m.loadUploader() }) }
@@ -143,7 +179,9 @@ internal fun CommentsScreen(s: AppState, m: BiliPlayViewModel) {
                 )
                 IconButton(onClick = { m.reply(null) }) { Icon(Icons.Default.Close, "取消回复") }
             }
+        CommentAttachments(s, m)
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            CommentImagePicker(s, m)
             IconButton(
                 onClick = {
                     emotesOpen = !emotesOpen
@@ -168,16 +206,17 @@ internal fun CommentsScreen(s: AppState, m: BiliPlayViewModel) {
             OutlinedTextField(
                 value = s.commentDraft,
                 onValueChange = m::commentDraft,
+                enabled = !s.posting,
                 modifier =
                     Modifier.weight(1f).focusRequester(inputFocus).onFocusChanged {
                         if (it.isFocused) emotesOpen = false
                     },
-                placeholder = { Text("评论") },
+                placeholder = { Text(if (s.commentImages.isEmpty()) "评论" else "添加文字（可选）") },
                 maxLines = 4,
             )
             IconButton(
                 onClick = m::sendComment,
-                enabled = !s.posting && s.commentDraft.isNotBlank(),
+                enabled = !s.posting && (s.commentDraft.isNotBlank() || s.commentImages.isNotEmpty()),
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, "发送评论")
             }
@@ -214,54 +253,81 @@ internal fun CommentsScreen(s: AppState, m: BiliPlayViewModel) {
 
 @Composable
 private fun CommentRow(c: Comment, s: AppState, m: BiliPlayViewModel) {
-    Column(
+    val openSpace = { m.openUploader(Uploader(c.authorId, c.author, c.avatar)) }
+    Row(
         Modifier.fillMaxWidth().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        AsyncImage(
+            c.avatar,
+            "${c.author}头像",
+            Modifier.size(36.dp)
+                .clip(MaterialTheme.shapes.extraLarge)
+                .clickable(
+                    onClickLabel = "进入${c.author}的个人主页",
+                    onClick = openSpace,
+                ),
+        )
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            AsyncImage(c.avatar, null, Modifier.size(36.dp).clip(MaterialTheme.shapes.extraLarge))
-            Column {
-                Text(c.author, style = MaterialTheme.typography.titleSmall)
+            Text(
+                c.author + if (c.pinned) " · 置顶" else "",
+                Modifier.clickable(
+                    onClickLabel = "进入${c.author}的个人主页",
+                    onClick = openSpace,
+                ),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (c.message.isNotBlank()) SelectionContainer { Text(c.message) }
+            CommentPictureGrid(c.pictures)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    date(c.timestamp) + (if (c.pinned) " · 置顶" else ""),
+                    date(c.timestamp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-        }
-        SelectionContainer { Text(c.message) }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { m.react(c, false) }) {
-                Icon(
-                    if (c.reaction == 1) Icons.Default.ThumbUp else Icons.Default.ThumbUpOffAlt,
-                    null,
-                    Modifier.size(18.dp),
-                )
-                Text(" ${c.likes}")
-            }
-            IconButton(onClick = { m.react(c, true) }) {
-                Icon(
-                    if (c.reaction == 2) Icons.Default.ThumbDown else Icons.Default.ThumbDownOffAlt,
-                    "点踩",
-                    Modifier.size(18.dp),
-                )
-            }
-            TextButton(onClick = { m.reply(c) }) { Text("回复") }
-            if (c.replies > 0 && s.route != "replies")
-                TextButton(onClick = { m.openReplies(c) }) {
-                    Text("展开${c.replies}条回复")
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp))
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { m.reply(c) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                ) { Text("回复") }
+                TextButton(
+                    onClick = { m.react(c, false) },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                ) {
+                    Icon(if (c.reaction == 1) Icons.Default.ThumbUp else Icons.Default.ThumbUpOffAlt,
+                        "点赞", Modifier.size(18.dp))
+                    if (c.likes > 0) Text(" ${c.likes}")
                 }
+                TextButton(
+                    onClick = { m.react(c, true) },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                ) {
+                    Icon(if (c.reaction == 2) Icons.Default.ThumbDown else Icons.Default.ThumbDownOffAlt,
+                        "点踩", Modifier.size(18.dp))
+                }
+            }
+            if (c.replies > 0 && s.route != "replies") {
+                Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    TextButton(onClick = { m.openReplies(c) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("展开${c.replies}条回复", Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp))
+                    }
+                }
+            }
         }
     }
-    HorizontalDivider()
+    HorizontalDivider(Modifier.padding(start = 64.dp, end = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
 }
+
 
 @Composable
 internal fun NotificationsScreen(s: AppState, m: BiliPlayViewModel) {
+    var menu by remember { mutableStateOf<String?>(null) }
     Column {
         Row(
             Modifier.fillMaxWidth()
@@ -282,26 +348,50 @@ internal fun NotificationsScreen(s: AppState, m: BiliPlayViewModel) {
         }
         LazyColumn {
             items(s.notifications, key = { it.id }) { n ->
-                ListItem(
-                    onClick = { m.openNotification(n) },
-                    content = { Text(n.title.ifBlank { n.category }) },
-                    supportingContent = {
-                        Column {
-                            if (n.content.isNotBlank())
-                                Text(n.content, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                            if (n.target.isNotBlank()) Text(n.target, maxLines = 2)
-                            Text(date(n.timestamp), style = MaterialTheme.typography.bodySmall)
-                        }
-                    },
-                    leadingContent = {
-                        if (n.avatar.isNotBlank())
-                            AsyncImage(
-                                n.avatar,
-                                null,
-                                Modifier.size(40.dp).clip(MaterialTheme.shapes.extraLarge),
-                            )
-                    },
-                )
+                Box {
+                    if (n.category == "私信")
+                        PrivateNotificationRow(
+                            n,
+                            onOpen = { m.openNotification(n) },
+                            onLongPress = { menu = n.id },
+                        )
+                    else
+                        ListItem(
+                            onClick = { m.openNotification(n) },
+                            onLongClick = { menu = n.id },
+                            onLongClickLabel = "删除通知",
+                            content = { Text(n.title.ifBlank { n.category }) },
+                            supportingContent = {
+                                Column {
+                                    if (n.content.isNotBlank())
+                                        Text(n.content, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                    if (n.target.isNotBlank()) Text(n.target, maxLines = 2)
+                                    Text(date(n.timestamp), style = MaterialTheme.typography.bodySmall)
+                                }
+                            },
+                            leadingContent = {
+                                if (n.avatar.isNotBlank())
+                                    AsyncImage(
+                                        n.avatar,
+                                        null,
+                                        Modifier.size(40.dp).clip(MaterialTheme.shapes.extraLarge),
+                                    )
+                            },
+                            trailingContent = { NotificationTargetThumb(n) },
+                        )
+                    DropdownMenu(
+                        expanded = menu == n.id,
+                        onDismissRequest = { menu = null },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("删除这条通知") },
+                            onClick = {
+                                menu = null
+                                m.deleteNotification(n)
+                            },
+                        )
+                    }
+                }
             }
             item { LoadMore(s.notificationHasMore, s, m) }
             if (s.notifications.isEmpty() && !s.loading)
@@ -312,6 +402,112 @@ internal fun NotificationsScreen(s: AppState, m: BiliPlayViewModel) {
                     )
                 }
         }
+    }
+}
+
+/** 会话列表项：圆角方形头像、对方昵称、末条消息与右上角时间。 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun PrivateNotificationRow(
+    n: Notification,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .combinedClickable(
+                onClickLabel = "打开私信",
+                onLongClickLabel = "删除通知",
+                onLongClick = onLongPress,
+                onClick = onOpen,
+            )
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Surface(
+            Modifier.size(46.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            if (n.avatar.isBlank())
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        n.title.take(1).ifBlank { "私" },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            else
+                AsyncImage(
+                    n.avatar,
+                    "${n.title}头像",
+                    Modifier.fillMaxSize().clip(MaterialTheme.shapes.medium),
+                    contentScale = ContentScale.Crop,
+                )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    n.title,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    notificationClock(n.timestamp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                n.content.ifBlank { "暂无消息" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** 点赞/回复/@ 行右侧的相关内容缩略图；没有封面时用目标文字生成小文字缩略图。 */
+@Composable
+private fun NotificationTargetThumb(n: Notification) {
+    val shape = MaterialTheme.shapes.small
+    if (n.targetImage.isNotBlank()) {
+        AsyncImage(
+            n.targetImage,
+            "相关内容封面",
+            Modifier.size(56.dp).clip(shape),
+            contentScale = ContentScale.Crop,
+        )
+        return
+    }
+    val text = n.target.ifBlank { n.content }
+    if (text.isBlank()) return
+    Surface(Modifier.size(56.dp), shape = shape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Text(
+            text,
+            Modifier.fillMaxSize().padding(4.dp),
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp),
+            maxLines = 5,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun notificationClock(timestamp: Long): String {
+    if (timestamp <= 0) return ""
+    val zone = java.time.ZoneId.systemDefault()
+    val time = java.time.Instant.ofEpochSecond(timestamp).atZone(zone)
+    val now = java.time.ZonedDateTime.now(zone)
+    return when {
+        time.toLocalDate() == now.toLocalDate() ->
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm").format(time)
+        time.year == now.year -> "${time.monthValue}月${time.dayOfMonth}日"
+        else -> "${time.year}/${time.monthValue}/${time.dayOfMonth}"
     }
 }
 

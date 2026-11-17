@@ -3,6 +3,17 @@ package io.github.sodarx.biliplay.core
 import java.net.URI
 
 object NotificationLinks {
+    /** Related video behind a like/reply/@ notification, resolved without opening a browser. */
+    fun video(raw: String): VideoInput? {
+        val resolved = resolve(raw) ?: return null
+        return VideoLinks.parse(resolved)
+    }
+
+    fun shortVideoLink(raw: String): String? {
+        val value = raw.trim().let { if (it.startsWith("//")) "https:$it" else it }
+        return value.takeIf { VideoLinks.allowedShortLink(it) }
+    }
+
     fun resolve(raw: String): String? {
         val value = raw.trim().let { if (it.startsWith("//")) "https:$it" else it }
         val uri = runCatching { URI(value) }.getOrNull() ?: return null

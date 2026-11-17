@@ -21,6 +21,8 @@ class UploaderContentTest {
                                     """{"wbi_img":{"img_url":"https://i0.hdslb.com/bfs/wbi/0123456789abcdef0123456789abcdef.png","sub_url":"https://i0.hdslb.com/bfs/wbi/abcdef0123456789abcdef0123456789.png"}}"""
                                 request.url.encodedPath.endsWith("/acc/info") ->
                                     """{"mid":42,"name":"synthetic","face":"https://example.invalid/avatar.png","sign":"synthetic profile"}"""
+                                request.url.encodedPath.endsWith("/relation/stat") ->
+                                    """{"mid":42,"follower":12345,"following":7}"""
                                 else ->
                                     """{"list":{"vlist":[{"aid":1,"bvid":"BV17K5r6nEod","mid":42,"author":"synthetic","title":"synthetic upload","length":"1:00","pic":"https://example.invalid/cover.png"}]},"page":{"count":1}}"""
                             }
@@ -58,5 +60,6 @@ class UploaderContentTest {
         assertEquals(42L, profile.id)
         assertEquals("https://example.invalid/avatar.png", profile.avatar)
         assertEquals("synthetic profile", profile.signature)
+        assertEquals(12345L, profile.followers)
     }
 }

@@ -37,12 +37,29 @@ internal fun DownloadsScreen(s: AppState, m: BiliPlayViewModel) {
             .onFailure { m.message("无法打开文件，请检查文件是否存在或其他应用是否可用") }
     }
     Column {
+        val chipColors =
+            FilterChipDefaults.filterChipColors(
+                containerColor = MaterialTheme.colorScheme.background,
+                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                selectedContainerColor = MaterialTheme.colorScheme.background,
+                selectedLabelColor = MaterialTheme.colorScheme.primary,
+            )
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            FilterChip(!s.downloadTasks, { m.downloadTasks(false) }, label = { Text("已下载") })
-            FilterChip(s.downloadTasks, { m.downloadTasks(true) }, label = { Text("下载任务") })
+            FilterChip(
+                !s.downloadTasks,
+                { m.downloadTasks(false) },
+                label = { Text("已下载") },
+                colors = chipColors,
+            )
+            FilterChip(
+                s.downloadTasks,
+                { m.downloadTasks(true) },
+                label = { Text("下载任务") },
+                colors = chipColors,
+            )
         }
         val rows =
             s.downloads

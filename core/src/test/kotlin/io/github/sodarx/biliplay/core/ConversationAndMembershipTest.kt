@@ -113,4 +113,45 @@ class ConversationAndMembershipTest {
         assertEquals(42, notice.talkerId)
         assertEquals(1, notice.sessionType)
     }
+
+    @Test
+    fun sessionIdentityPrefersTalkerInfoAndBatchResolvesMissingCards() = runBlocking {
+        val paths = mutableListOf<String>()
+        val client =
+            BilibiliApi(
+                client =
+                    OkHttpClient.Builder()
+                        .addInterceptor { chain ->
+                            val request = chain.request()
+                            paths += request.url.encodedPath
+                            val body =
+                                when {
+                                    request.url.encodedPath.endsWith("/get_sessions") ->
+                                        """{"code":0,"data":{"session_list":[""" +
+                                            """{"talker_id":42,"session_type":1,"account_info":{"face":"https://i0.hdslb.com/bfs/face/account42.jpg"},"talker_info":{"name":"合成昵称","face":"https://i0.hdslb.com/bfs/face/face42.jpg"},"last_msg":{"content":"你好"}},""" +
+                                            """{"talker_id":7,"session_type":1,"account_info":{},"talker_info":{},"last_msg":{"content":"在吗"}}]}}"""
+                                    request.url.encodedPath.contains("user/cards") ->
+                                        """{"code":0,"data":{"7":{"mid":7,"name":"卡片昵称","face":"https://i0.hdslb.com/bfs/face/face7.jpg"},"8":{"mid":8,"name":"未请求","face":"https://i0.hdslb.com/bfs/face/face8.jpg"}}}"""
+                                    else -> """{"code":0,"data":{}}"""
+                                }
+                            Response.Builder()
+                                .request(request)
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(200)
+                                .message("Synthetic")
+                                .body(body.toResponseBody("application/json".toMediaType()))
+                                .build()
+                        }
+                        .build()
+            )
+        val items = client.notifications("session").items
+        assertEquals(2, items.size)
+        val named = items.first { it.talkerId == 42L }
+        assertEquals("合成昵称", named.title)
+        assertTrue(named.avatar.endsWith("face42.jpg"))
+        val resolved = items.first { it.talkerId == 7L }
+        assertEquals("卡片昵称", resolved.title)
+        assertTrue(resolved.avatar.endsWith("face7.jpg"))
+        assertTrue(paths.any { it.contains("user/cards") })
+    }
 }

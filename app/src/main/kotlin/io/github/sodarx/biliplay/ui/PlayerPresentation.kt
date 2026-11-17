@@ -82,6 +82,7 @@ internal fun BoxScope.PlayerIsland(
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var settling by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val dragSpec = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
+    val releaseSpec = MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
     val displayTitle = songTitle(track.title)
     val density = androidx.compose.ui.platform.LocalDensity.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -164,7 +165,7 @@ internal fun BoxScope.PlayerIsland(
                 maxHeight.value,
                 status.value + 4f,
                 x.value,
-                safeY.value + with(density) { dragOffset.toDp().value },
+                safeY.value,
                 width.value,
                 height.value,
                 cover.value,
@@ -181,6 +182,10 @@ internal fun BoxScope.PlayerIsland(
             },
             modifier =
                 Modifier.offset(geometry.x.dp, geometry.y.dp)
+                    .graphicsLayer {
+                        translationY = dragOffset.coerceIn(
+                            ((status + 4.dp).value - geometry.y).dp.toPx().coerceAtMost(0f), 0f)
+                    }
                     .layout { measurable, constraints ->
                         val placeable = measurable.measure(constraints)
                         if (dockedInPage) layout(0, 0) {}
@@ -201,7 +206,10 @@ internal fun BoxScope.PlayerIsland(
                             },
                             onVerticalDrag = { change, amount ->
                                 change.consume()
-                                distance = (distance + amount).coerceIn(-160.dp.toPx(), 0f)
+                                val travel = io.github.sodarx.biliplay.core.AdaptiveLayout.dragTravel(
+                                    maxHeight.value, status.value + 4f,
+                                    (maxHeight - navHeight - 88.dp).value)
+                                distance = (distance + amount).coerceIn(-travel.dp.toPx(), 0f)
                                 velocity.addPosition(
                                     change.uptimeMillis,
                                     androidx.compose.ui.geometry.Offset(0f, distance),
@@ -209,15 +217,18 @@ internal fun BoxScope.PlayerIsland(
                                 dragOffset = distance
                             },
                             onDragEnd = {
-                                if (
+                                val minimizing =
                                     distance < -28.dp.toPx() ||
                                         velocity.calculateVelocity().y < -700f
-                                )
-                                    m.minimizeIsland(true)
+                                if (minimizing) m.minimizeIsland(true)
                                 settling = scope.launch {
-                                    animate(dragOffset, 0f, animationSpec = dragSpec) { value, _ ->
-                                        dragOffset = value
-                                    }
+                                    // Release the drag with the same spring as the dock-to-capsule
+                                    // geometry so the bar never dips down before the island rises.
+                                    animate(
+                                        dragOffset,
+                                        0f,
+                                        animationSpec = if (minimizing) releaseSpec else dragSpec,
+                                    ) { value, _ -> dragOffset = value }
                                 }
                             },
                             onDragCancel = {

@@ -31,10 +31,11 @@ class PlaybackService : MediaSessionService() {
                 .setAllowCrossProtocolRedirects(false)
                 .setConnectTimeoutMs(6000)
                 .setReadTimeoutMs(15000)
+        val mediaFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http))
         val p =
             ExoPlayer.Builder(this, DefaultRenderersFactory(this).setEnableDecoderFallback(true))
                 .setMediaSourceFactory(
-                    DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http))
+                    mediaFactory
                 )
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -47,7 +48,9 @@ class PlaybackService : MediaSessionService() {
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build()
         engine = p
-        hub.attach(p)
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true).build()
+        hub.attach(p, mediaFactory)
         val forwarded =
             object : ForwardingPlayer(p) {
                 override fun getAvailableCommands(): Player.Commands =

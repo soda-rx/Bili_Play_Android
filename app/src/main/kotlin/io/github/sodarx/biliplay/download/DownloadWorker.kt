@@ -64,6 +64,8 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                 val sources = profile.api.audio(resolved, profile.account?.vip == true)
                 val quality = inputData.getString("quality") ?: "标准"
                 val source = sources.firstOrNull { it.quality == quality } ?: sources.first()
+                if (source.segments.size > 1)
+                    throw ApiFailure(-1, "此旧格式音源含多个分段，目前仅支持在线播放")
                 if (source.quality.startsWith("Hi-Res") && profile.account?.vip != true)
                     throw ApiFailure(-1, "Hi-Res 需要大会员权益")
                 var last = 0L

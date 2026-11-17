@@ -25,7 +25,7 @@ android {
     }
     signingConfigs.getByName("debug") {
         storeFile = file(providers.environmentVariable("BILIPLAY_DEVELOPMENT_KEYSTORE").orElse(
-            "${System.getProperty("user.home")}/.biliplay-android-signing/development/debug.jks"
+            "${System.getProperty("user.home")}/.biliplay_android_signing/development/debug.jks"
         ).get())
     }
     buildTypes { release { isMinifyEnabled = true; isShrinkResources = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
@@ -48,9 +48,10 @@ val verifyProductionBuild=tasks.register<VerifyBuildMode>("verifyProductionBuild
 }
 tasks.configureEach {
     if (name.matches(Regex("(assemble|bundle|test|lint|compile|package).*Development.*"))) dependsOn(verifyDevelopmentBuild)
-    if (name.matches(Regex("(assemble|bundle|package).*Production.*"))) dependsOn(verifyProductionBuild)
+    if (name.matches(Regex("(assemble|bundle|test|lint|compile|package).*Production.*"))) dependsOn(verifyProductionBuild)
 }
 dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.webkit:webkit:1.18.0")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
     implementation("androidx.documentfile:documentfile:1.1.0")

@@ -31,13 +31,21 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     private val routeHistory = RouteHistory()
     private var operations = 0
     private var searchJob: Job? = null
+    private var folderJob: Job? = null
+    private var uploaderJob: Job? = null
+    private var librarySearchJob: Job? = null
+    private var librarySearchEpoch = 0L
     private var suggestionJob: Job? = null
     private var lyricJob: Job? = null
+    private var commentPost: Job? = null
+    private var commentPostEpoch = 0L
     private var loginJob: Job? = null
     private var candidate: Profile? = null
     private var validatingLogin = false
     private var likedPool: List<Track> = emptyList()
     private var homePage = 1
+    private var recommendationBatches: MutableList<Set<String>> = mutableListOf()
+    private var recommendationSeed = 0
     private var continueWindowStarted = false
     private var continueOfferActive = true
     private var dailyRequest: Job? = null
@@ -48,6 +56,9 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     private var favoriteRequest: Job? = null
     private var favoriteStateEpoch = 0L
     private var conversationRequest: Job? = null
+    private var conversationSendJob: Job? = null
+    private var pendingConversationImage: CommentImageUpload? = null
+    private var conversationImageOwner = ""
     private var followingEpoch = 0
 
     private data class PendingPlay(
@@ -74,6 +85,12 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                 lyricKey = ""
                 previewJobs.clear()
                 likedPool = emptyList()
+                recommendationBatches = mutableListOf()
+                recommendationSeed = 0
+                conversationSendJob?.cancel()
+                conversationSendJob = null
+                pendingConversationImage = null
+                conversationImageOwner = ""
                 val prefs = p.preferences.read()
                 mutable.value =
                     AppState(
@@ -111,6 +128,17 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                         downloads = p.library.downloads(),
                         downloadTree = p.library.get("download_tree"),
                     )
+                // The last session's visible batch still counts as recent after a restart.
+                recommendationBatches =
+                    listOf(
+                            (state.value.likedMusic +
+                                state.value.dailyMusic +
+                                state.value.recommendations)
+                                .map { it.key }
+                                .toSet()
+                        )
+                        .filter { it.isNotEmpty() }
+                        .toMutableList()
                 profileScope.launch {
                     p.library.changes.collectLatest {
                         val overview = withContext(Dispatchers.IO) { p.library.overview() }
@@ -277,6 +305,13 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun navigate(route: String) {
+        if (state.value.route == "librarySearch" && route != "librarySearch") pauseLibrarySearch()
+        if (state.value.route in listOf("comments", "replies") && state.value.route != route)
+            cancelCommentSending(clearImages = true)
+        if (state.value.route == "conversation" && route != "conversation")
+            clearConversationComposer()
+        if (state.value.route == "folder" && route != "folder") clearFolderSelection()
+        if (state.value.route == "uploader" && route != "uploader") clearUploaderSelection()
         if (
             state.value.agreementAccepted &&
                 state.value.themeSetupComplete &&
@@ -316,6 +351,11 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun back() {
+        if (state.value.route == "librarySearch") pauseLibrarySearch()
+        if (state.value.route in listOf("comments", "replies")) cancelCommentSending(clearImages = true)
+        if (state.value.route == "conversation") clearConversationComposer()
+        if (state.value.route == "folder") clearFolderSelection()
+        if (state.value.route == "uploader") clearUploaderSelection()
         if (state.value.account == null && state.value.route == "login") return
         if (state.value.route == "login") cancelLogin()
         val destination = routeHistory.back(state.value.tab)
@@ -372,6 +412,19 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         mutable.update { it.copy(appearance = value) }
     }
 
+    /** Scratch size is recomputed when Settings opens and after the cache is cleared. */
+    fun settingsVisible() {
+        val p = current()
+        profileScope.launch {
+            val bytes =
+                withContext(Dispatchers.IO) {
+                    runCatching { SingletonImageLoader.get(app).diskCache?.size ?: 0L }
+                        .getOrDefault(0L)
+                }
+            if (current() === p) mutable.update { it.copy(imageCacheBytes = bytes) }
+        }
+    }
+
     fun refreshAccount() = launch { p ->
         val account = p.api.account()
         require(p.account?.id == account.id) { "账号已变更，请重新登录" }
@@ -397,7 +450,6 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         candidate = repo.newLogin()
         mutable.update {
             it.copy(
-                loginStatus = "",
                 loginBusy = false,
                 loginEpoch = it.loginEpoch + 1,
                 dialog = null,
@@ -617,6 +669,38 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
             emptyList()
         }
 
+    private fun recommendationSignals(
+        extraBatches: List<Set<String>> = emptyList()
+    ): RecommendationSignals {
+        val p = current()
+        val history = state.value.history.ifEmpty { p.library.history() }.take(120)
+        val previousLiked = p.library.tracks("home:desktop-v1:liked")
+        return RecommendationSignals(
+            playedKeys = history.map { it.key }.toSet(),
+            playedCreators = history.take(40).map(RecommendationPolicy::creator).toSet(),
+            likedCreators =
+                (state.value.likedMusic + previousLiked)
+                    .map(RecommendationPolicy::creator)
+                    .toSet(),
+            recentBatches =
+                (extraBatches + recommendationBatches)
+                    .filter { it.isNotEmpty() }
+                    .take(RecommendationPolicy.RecentBatches),
+        )
+    }
+
+    private fun rememberRecommendationBatch() {
+        val keys =
+            (state.value.likedMusic + state.value.dailyMusic + state.value.recommendations)
+                .map { it.key }
+                .toSet()
+        if (keys.isEmpty()) return
+        recommendationBatches =
+            (listOf(keys) + recommendationBatches)
+                .take(RecommendationPolicy.RecentBatches)
+                .toMutableList()
+    }
+
     fun refreshHome() {
         likedRequest?.cancel()
         dailyRequest?.cancel()
@@ -645,7 +729,17 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                         val f = feed.await()
                         val r = f.filter { it.track.uploaderId in PreferredMusic.uploaders }
                         val hot = rank.await()
-                        val sections = MusicRecommendations.sections(r, f)
+                        val previous = state.value.likedMusic
+                        val sections =
+                            MusicRecommendations.sections(
+                                r,
+                                f,
+                                previous,
+                                recommendationSignals(
+                                    listOf(previous.map { it.key }.toSet())
+                                ),
+                                ++recommendationSeed,
+                            )
                         likedPool = (r + f).map { it.track }.distinctBy { it.key }
                         if (epoch == homeEpoch)
                             mutable.update {
@@ -661,6 +755,7 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                                         if (r.isEmpty() && f.isEmpty()) "B站个性化音乐推荐暂不可用" else null,
                                 )
                             }
+                        if (epoch == homeEpoch) rememberRecommendationBatch()
                         if (epoch == homeEpoch)
                             withContext(Dispatchers.IO) {
                                 if (sections.likes.isNotEmpty())
@@ -691,9 +786,23 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
             try {
                 val pool = p.api.desktopMusic(independent = true).items.distinctBy { it.key }
                 if (pool.isEmpty()) throw ApiFailure(-1, "今日推荐暂不可用")
-                val daily = pool.sortedBy { it.key in previous }.take(8)
+                val seed = ++recommendationSeed
+                val signals =
+                    recommendationSignals(
+                        listOf(
+                            previous,
+                            state.value.likedMusic.map { it.key }.toSet(),
+                        )
+                    )
+                // 与当前页面的猜你喜欢、更多推荐不重复；候选不足时才回退。
+                val excluded =
+                    (state.value.likedMusic + state.value.recommendations).map { it.key }.toSet()
+                val daily =
+                    RecommendationPolicy.section(pool, 8, signals, seed, excluded)
+                        .ifEmpty { RecommendationPolicy.pick(pool, 8, signals, seed) }
                 if (current() === p && epoch == homeEpoch) {
                     mutable.update { it.copy(dailyMusic = daily) }
+                    rememberRecommendationBatch()
                     withContext(Dispatchers.IO) {
                         p.library.saveTracks("home:desktop-v1:daily", daily)
                     }
@@ -731,10 +840,25 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                                     state.value.recommendations
                             }
                         }
+                // 换一组优先换创作者：上一组创作者降权，且不再作为“喜欢”加分。
+                val previousCreators = previous.map(RecommendationPolicy::creator).toSet()
+                val base = recommendationSignals(listOf(previous.map { it.key }.toSet()))
+                val signals =
+                    base.copy(
+                        playedCreators = base.playedCreators + previousCreators,
+                        likedCreators = base.likedCreators - previousCreators,
+                    )
+                val seed = ++recommendationSeed
+                val excluded =
+                    (state.value.dailyMusic + state.value.recommendations).map { it.key }.toSet()
+                val likes =
+                    RecommendationPolicy.section(candidates, 3, signals, seed, excluded)
+                        .ifEmpty { RecommendationPolicy.pick(candidates, 3, signals, seed) }
                 if (current() === p)
                     mutable.update {
-                        it.copy(likedMusic = LikedSelection.select(candidates, previous))
+                        if (likes.isEmpty()) it else it.copy(likedMusic = likes)
                     }
+                if (current() === p) rememberRecommendationBatch()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -903,7 +1027,10 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
 
     fun setSpeed(value: Float) = hub.speed(value)
 
-    fun changeQuality(index: Int) = hub.quality(index)
+    fun changeQuality(index: Int) {
+        hub.quality(index)
+        mutable.update { it.copy(appearance = current().preferences.read()) }
+    }
 
     fun next(direction: Int = 1) {
         launch {
@@ -1047,6 +1174,8 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         mutable.update {
             it.copy(
                 selectedFolder = folder,
+                folderSelecting = false,
+                selectedFolderTracks = emptySet(),
                 folderTracks = emptyList(),
                 folderPage = 1,
                 folderHasMore = false,
@@ -1056,18 +1185,217 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         loadFolder()
     }
 
-    fun loadFolder(more: Boolean = false) = launch { p ->
-        val folder = state.value.selectedFolder ?: return@launch
-        val page = if (more) state.value.folderPage + 1 else 1
-        val result = p.api.folderTracks(folder.id, page)
+    fun loadFolder(more: Boolean = false) {
+        if (more && folderJob?.isActive == true) return
+        folderJob?.cancel()
+        val selected = state.value
+        val folder = selected.selectedFolder ?: return
+        val page = if (more) selected.folderPage + 1 else 1
+        folderJob = launch { p ->
+            val result = p.api.folderTracks(folder.id, page)
+            if (state.value.selectedFolder?.id != folder.id) return@launch
+            mutable.update {
+                it.copy(folderTracks = if (more) (it.folderTracks + result.items).distinctBy { t -> t.key }
+                    else result.items, folderPage = page, folderHasMore = result.hasMore)
+            }
+        }
+    }
+
+    fun selectFolderTrack(key: String) {
+        mutable.update { it.copy(selectedFolderTracks = if (key in it.selectedFolderTracks)
+            it.selectedFolderTracks - key else it.selectedFolderTracks + key) }
+    }
+
+    fun toggleFolderSelection() {
+        mutable.update { it.copy(folderSelecting = !it.folderSelecting, selectedFolderTracks = emptySet()) }
+    }
+
+    fun selectAllFolderTracks() {
+        mutable.update { it.copy(selectedFolderTracks = it.folderTracks.map { t -> t.key }.toSet()) }
+    }
+
+    fun selectUploaderTrack(key: String) {
+        mutable.update { it.copy(selectedUploaderTracks = if (key in it.selectedUploaderTracks)
+            it.selectedUploaderTracks - key else it.selectedUploaderTracks + key) }
+    }
+
+    fun toggleUploaderSelection() {
+        mutable.update { it.copy(uploaderSelecting = !it.uploaderSelecting, selectedUploaderTracks = emptySet()) }
+    }
+
+    fun selectAllUploaderTracks() {
+        mutable.update { it.copy(selectedUploaderTracks = it.uploaderTracks.map { t -> t.key }.toSet()) }
+    }
+
+    fun downloadFolderSelection() {
+        val s = state.value
+        startBatchDownload(s.folderTracks.filter { it.key in s.selectedFolderTracks }.distinctBy { it.key })
+    }
+
+    fun downloadUploaderSelection() {
+        val s = state.value
+        startBatchDownload(s.uploaderTracks.filter { it.key in s.selectedUploaderTracks }.distinctBy { it.key })
+    }
+
+    private fun startBatchDownload(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        val p = current()
         mutable.update {
             it.copy(
-                folderTracks =
-                    if (more) (it.folderTracks + result.items).distinctBy { t -> t.bvid to t.page }
-                    else result.items,
-                folderPage = page,
-                folderHasMore = result.hasMore,
+                batchDownloadTracks = tracks,
+                dialog = "batchDownload",
+                downloadQuality =
+                    PlaybackQuality.downloadDefault(
+                        p.preferences.read().preferredQuality,
+                        p.account?.vip == true,
+                    ),
+                downloadBitrate = 320000,
             )
+        }
+    }
+
+    fun requestUnfavoriteFolderSelection() {
+        val s = state.value
+        if (s.selectionBusy || s.selectedFolderTracks.isEmpty()) return
+        if (s.selectedFolder?.owned != true) {
+            message("订阅收藏夹只读")
+            return
+        }
+        mutable.update { it.copy(dialog = "unfavoriteSelection") }
+    }
+
+    /** Batch removal only reports rows the server accepted; a failed row stays selected in place. */
+    fun confirmUnfavoriteFolderSelection() {
+        val s = state.value
+        val folder = s.selectedFolder ?: return
+        if (s.selectionBusy || s.selectedFolderTracks.isEmpty()) {
+            dismissDialog()
+            return
+        }
+        if (!folder.owned) {
+            dismissDialog()
+            message("订阅收藏夹只读")
+            return
+        }
+        val tracks = s.folderTracks.filter { it.key in s.selectedFolderTracks }.distinctBy { it.key }
+        dismissDialog()
+        if (tracks.isEmpty()) return
+        mutable.update { it.copy(selectionBusy = true) }
+        launch { p ->
+            val removed = mutableSetOf<String>()
+            var failed = 0
+            try {
+                for (track in tracks) {
+                    try {
+                        p.api.favorite(track, folder, false)
+                        removed += track.key
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        failed++
+                    }
+                }
+            } finally {
+                if (current() === p) mutable.update { it.copy(selectionBusy = false) }
+            }
+            if (current() !== p || state.value.selectedFolder?.id != folder.id) return@launch
+            mutable.update {
+                it.copy(
+                    folderTracks = it.folderTracks.filterNot { row -> row.key in removed },
+                    selectedFolder =
+                        it.selectedFolder?.copy(
+                            count = (it.selectedFolder.count - removed.size).coerceAtLeast(0)
+                        ),
+                    folderSelecting = false,
+                    selectedFolderTracks = emptySet(),
+                )
+            }
+            if (removed.isNotEmpty()) refreshFolders()
+            message(
+                when {
+                    removed.isEmpty() -> "取消收藏失败，请稍后重试"
+                    failed > 0 -> "已取消收藏 ${removed.size} 首，${failed} 首失败"
+                    else -> "已取消收藏 ${removed.size} 首"
+                }
+            )
+        }
+    }
+
+    private fun clearFolderSelection() {
+        mutable.update { it.copy(folderSelecting = false, selectedFolderTracks = emptySet()) }
+    }
+
+    private fun clearUploaderSelection() {
+        mutable.update { it.copy(uploaderSelecting = false, selectedUploaderTracks = emptySet()) }
+    }
+
+    fun openLibrarySearch() {
+        val s = state.value
+        val target = when (s.route) {
+            "folder" -> s.selectedFolder?.let {
+                LibrarySearchState(LibrarySearchKind.Folder, it.id, ++librarySearchEpoch)
+            }
+            "uploader" -> s.selectedUploader?.let {
+                LibrarySearchState(LibrarySearchKind.Uploader, it.id, ++librarySearchEpoch)
+            }
+            "queue" -> LibrarySearchState(LibrarySearchKind.Queue, 0, ++librarySearchEpoch)
+            else -> null
+        } ?: return
+        librarySearchJob?.cancel()
+        mutable.update { it.copy(librarySearch = target) }
+        navigate("librarySearch")
+    }
+
+    private fun pauseLibrarySearch() {
+        librarySearchEpoch++
+        librarySearchJob?.cancel()
+        mutable.update { it.copy(librarySearch = it.librarySearch?.copy(loading = false)) }
+    }
+
+    fun librarySearchQuery(value: String, session: Long) {
+        val search = state.value.librarySearch ?: return
+        if (state.value.route != "librarySearch" || search.session != session || search.query == value) return
+        librarySearchJob?.cancel()
+        librarySearchEpoch++
+        mutable.update { it.copy(librarySearch = search.copy(query = value, tracks = emptyList(), page = 0,
+            hasMore = false, searched = false, loading = false, error = null)) }
+        loadLibrarySearch(debounce = true)
+    }
+
+    fun loadLibrarySearch(more: Boolean = false, debounce: Boolean = false) {
+        val search = state.value.librarySearch ?: return
+        if (state.value.route != "librarySearch" || search.kind == LibrarySearchKind.Queue || search.query.isBlank()) return
+        if (more && (search.loading || !search.hasMore)) return
+        librarySearchJob?.cancel()
+        val epoch = ++librarySearchEpoch
+        val p = current()
+        val page = if (more) search.page + 1 else 1
+        val query = search.query.trim()
+        mutable.update { it.copy(librarySearch = search.copy(loading = true, error = null)) }
+        librarySearchJob = profileScope.launch {
+            try {
+                if (debounce) delay(300)
+                val result = when (search.kind) {
+                    LibrarySearchKind.Folder -> p.api.folderTracks(search.sourceId, page, query)
+                    LibrarySearchKind.Uploader -> p.api.uploaderVideos(search.sourceId, page, keyword = query, musicOnly = false)
+                    LibrarySearchKind.Queue -> return@launch
+                }
+                if (current() !== p || librarySearchEpoch != epoch) return@launch
+                mutable.update { s -> s.copy(librarySearch = s.librarySearch?.copy(
+                    tracks = (if (more) search.tracks + result.items else result.items).distinctBy { it.key },
+                    page = page, hasMore = result.hasMore && result.items.isNotEmpty(),
+                    searched = true, loading = false, error = null)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (current() !== p || librarySearchEpoch != epoch) return@launch
+                if (e is ApiFailure && e.requiresLogin) {
+                    repo.markExpired(p.id)
+                    mutable.update { it.copy(account = null) }
+                }
+                val text = if (e is ApiFailure) e.message ?: "搜索失败，请重试" else "搜索失败，请检查网络后重试"
+                mutable.update { it.copy(librarySearch = it.librarySearch?.copy(loading = false, error = text)) }
+            }
         }
     }
 
@@ -1193,7 +1521,19 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
             }
     }
 
-    fun openUploader(user: Uploader) {
+    fun openUploader(user: Uploader) = openUploader(user, own = false)
+
+    /** The profile card opens the signed-in user's own space; only the arrow opens account management. */
+    fun openOwnSpace() {
+        val account = state.value.account
+        if (account == null) {
+            startLogin()
+            return
+        }
+        openUploader(Uploader(account.id, account.name, account.avatar), own = true)
+    }
+
+    private fun openUploader(user: Uploader, own: Boolean) {
         mutable.update {
             it.copy(
                 selectedUploader = user,
@@ -1201,12 +1541,15 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                 uploaderPage = 1,
                 uploaderHasMore = false,
                 isFollowing = false,
+                ownSpace = own,
+                uploaderSelecting = false,
+                selectedUploaderTracks = emptySet(),
             )
         }
         navigate("uploader")
         loadUploader()
         val epoch = followingEpoch
-        if (state.value.account != null)
+        if (!own && state.value.account != null)
             launch { p ->
                 val following = p.api.following(user.id)
                 if (followingEpoch == epoch && state.value.selectedUploader?.id == user.id)
@@ -1344,9 +1687,12 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         openUploader(Uploader(t.uploaderId, t.uploader))
     }
 
-    fun loadUploader(more: Boolean = false) = launch { p ->
-        val user = state.value.selectedUploader ?: return@launch
+    fun loadUploader(more: Boolean = false) {
+        if (more && uploaderJob?.isActive == true) return
+        uploaderJob?.cancel()
+        val user = state.value.selectedUploader ?: return
         val page = if (more) state.value.uploaderPage + 1 else 1
+        uploaderJob = launch { p ->
         if (!more) {
             val profile =
                 try {
@@ -1369,6 +1715,7 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                 uploaderPage = page,
                 uploaderHasMore = result.hasMore,
             )
+        }
         }
     }
 
@@ -1490,6 +1837,7 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
 
     fun openComments() {
         val t = state.value.current ?: return
+        cancelCommentSending(clearImages = true)
         mutable.update {
             it.copy(
                 commentTrack = t,
@@ -1497,6 +1845,7 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                 commentRoot = null,
                 replyTarget = null,
                 commentDraft = "",
+                commentImages = emptyList(),
                 commentPage = 1,
             )
         }
@@ -1549,30 +1898,75 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun reply(comment: Comment?) {
+        if (state.value.posting) return
         mutable.update { it.copy(replyTarget = comment) }
     }
 
     fun commentDraft(value: String) {
+        if (state.value.posting) return
         mutable.update { it.copy(commentDraft = value.take(1000)) }
+    }
+
+    fun commentImageOwner(): String = state.value.let {
+        "${it.profileId}:${it.commentTrack?.aid}:${it.commentRoot?.id}:${it.replyTarget?.id}:${it.routeVisit}"
+    }
+
+    fun addCommentImages(uris: List<Uri>, owner: String) {
+        if (owner != commentImageOwner() || state.value.posting || state.value.route !in listOf("comments", "replies")) return
+        val selected = uris.filter { it.scheme == "content" }.map { it.toString() }
+        val all = (state.value.commentImages + selected).distinct()
+        mutable.update { it.copy(commentImages = all.take(CommentImages.MaxCount)) }
+        if (all.size > CommentImages.MaxCount) message("最多选择九张图片")
+    }
+
+    fun removeCommentImage(uri: String) {
+        if (!state.value.posting) mutable.update { it.copy(commentImages = it.commentImages - uri) }
+    }
+
+    private fun cancelCommentSending(clearImages: Boolean) {
+        commentPostEpoch++
+        commentPost?.cancel()
+        commentPost = null
+        mutable.update { it.copy(posting = false, commentUploadIndex = 0,
+            commentImages = if (clearImages) emptyList() else it.commentImages) }
     }
 
     fun sendComment() {
         if (!requireLogin() || state.value.posting) return
-        launch { p ->
-            mutable.update { it.copy(posting = true) }
+        val s = state.value
+        if (s.route !in listOf("comments", "replies")) return
+        if (s.commentDraft.isBlank() && s.commentImages.isEmpty()) return
+        val track = s.commentTrack ?: return
+        val owner = commentImageOwner()
+        val epoch = ++commentPostEpoch
+        mutable.update { it.copy(posting = true, commentUploadIndex = 0) }
+        commentPost = launch { p ->
             try {
-                val s = state.value
-                val track = s.commentTrack ?: return@launch
                 val account = p.api.account()
                 require(account.id == p.account?.id) { "账号已变更，请重新登录" }
+                val prepared = s.commentImages.map {
+                    io.github.sodarx.biliplay.comment.CommentImagePreparer.prepare(app.contentResolver, Uri.parse(it))
+                }
+                val pictures = mutableListOf<CommentPicture>()
+                for ((index, image) in prepared.withIndex()) {
+                    currentCoroutineContext().ensureActive()
+                    if (current() !== p || owner != commentImageOwner() || epoch != commentPostEpoch) return@launch
+                    mutable.update { it.copy(commentUploadIndex = index + 1) }
+                    pictures += p.api.uploadCommentImage(image)
+                }
+                currentCoroutineContext().ensureActive()
+                if (current() !== p || owner != commentImageOwner() || epoch != commentPostEpoch) return@launch
                 val target = s.replyTarget
-                val root = if (target == null) 0L else s.commentRoot?.id ?: target.id
-                p.api.sendComment(track.aid, s.commentDraft, root, target?.id ?: 0)
-                mutable.update { it.copy(commentDraft = "", replyTarget = null) }
+                val root = if (s.route == "replies") s.commentRoot?.id ?: return@launch else target?.id ?: 0L
+                mutable.update { it.copy(commentUploadIndex = s.commentImages.size + 1) }
+                p.api.sendComment(track.aid, s.commentDraft, root, target?.id ?: root, pictures)
+                if (current() !== p || owner != commentImageOwner() || epoch != commentPostEpoch) return@launch
+                mutable.update { it.copy(commentDraft = "", replyTarget = null, commentImages = emptyList()) }
                 if (s.route == "replies") loadReplies() else loadComments()
                 message("已发送")
             } finally {
-                mutable.update { it.copy(posting = false) }
+                if (current() === p && epoch == commentPostEpoch)
+                    mutable.update { it.copy(posting = false, commentUploadIndex = 0) }
             }
         }
     }
@@ -1611,6 +2005,7 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun insertEmote(text: String) {
+        if (state.value.posting) return
         commentDraft(state.value.commentDraft + text)
     }
 
@@ -1655,12 +2050,21 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                     errors++
                 }
             }
+            val dismissed =
+                withContext(Dispatchers.IO) {
+                    NotificationDismissals.decode(p.library.get("dismissed_notifications")).toSet()
+                }
+            if (current() !== p) return@launch
             mutable.update {
                 it.copy(
+                    notificationDismissed = dismissed,
                     notifications =
-                        ((if (more) it.notifications else emptyList()) + result)
-                            .distinctBy { n -> n.id }
-                            .sortedByDescending { n -> n.timestamp },
+                        NotificationDismissals.filter(
+                            ((if (more) it.notifications else emptyList()) + result)
+                                .distinctBy { n -> n.id }
+                                .sortedByDescending { n -> n.timestamp },
+                            dismissed,
+                        ),
                     notificationHasMore = notificationCursors.values.any { c -> c.isNotEmpty() },
                     notificationWarning = if (errors > 0) "部分通知读取失败，请刷新重试" else null,
                 )
@@ -1671,6 +2075,20 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     fun openNotification(notification: Notification) {
         if (notification.category == "私信") {
             openConversation(notification)
+            return
+        }
+        val video = NotificationLinks.video(notification.url)
+        if (video != null) {
+            openNotificationVideo(video, notification.category == "回复与 @")
+            return
+        }
+        val short = NotificationLinks.shortVideoLink(notification.url)
+        if (short != null) {
+            launch { p ->
+                val input = runCatching { p.api.resolveVideoInput(short) }.getOrNull()
+                if (input == null) message("关联内容暂不可用")
+                else openNotificationVideo(input, notification.category == "回复与 @")
+            }
             return
         }
         val url = NotificationLinks.resolve(notification.url)
@@ -1688,6 +2106,71 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         navigate("notificationDetail")
     }
 
+    /** Opens the video behind a like/reply/@ notice; replies land in its comment sheet. */
+    private fun openNotificationVideo(input: VideoInput, comments: Boolean) {
+        launch { p ->
+            val video = p.api.video(input)
+            val track = video.parts.firstOrNull { it.page == input.page } ?: video.track
+            // A notification jump must reach the related content even when the click policy asks
+            // about queue handling: replace the queue instead of prompting.
+            hideContinueListening()
+            playWithPolicy(track, listOf(track), append = false, expandCollection = true, origin = null)
+            var attempts = 0
+            while (attempts < 60 && state.value.current?.key != track.key) {
+                delay(100)
+                attempts++
+            }
+            if (state.value.current?.key != track.key) return@launch
+            if (state.value.route != "player") navigate("player")
+            if (comments) openComments()
+        }
+    }
+
+    /**
+     * Deletes one notification. Like/reply/@ and private sessions use the verified server paths;
+     * any other row is hidden locally for this account because no cloud endpoint is verified.
+     */
+    fun deleteNotification(notification: Notification) {
+        if (!NotificationDeletion.serverSide(notification)) {
+            hideNotificationLocally(notification)
+            message("已隐藏该通知")
+            return
+        }
+        launch { p ->
+            val account = p.api.account()
+            require(account.id == p.account?.id) { "账号已变更，请重新登录" }
+            p.api.deleteNotification(notification)
+            removeNotificationRow(notification.id)
+            message("已删除通知")
+        }
+    }
+
+    private fun hideNotificationLocally(notification: Notification) {
+        val p = current()
+        val dismissed =
+            NotificationDismissals.dismiss(
+                NotificationDismissals.decode(p.library.get("dismissed_notifications")),
+                notification.id,
+            )
+        p.library.put("dismissed_notifications", NotificationDismissals.encode(dismissed))
+        mutable.update {
+            it.copy(
+                notificationDismissed = it.notificationDismissed + notification.id,
+                notifications = it.notifications.filterNot { row -> row.id == notification.id },
+            )
+        }
+    }
+
+    private fun removeNotificationRow(id: String) {
+        mutable.update {
+            it.copy(
+                notifications = it.notifications.filterNot { row -> row.id == id },
+                selectedNotification =
+                    it.selectedNotification?.takeUnless { row -> row.id == id },
+            )
+        }
+    }
+
     fun openConversation(notification: Notification) {
         if (!requireLogin()) return
         if (
@@ -1699,12 +2182,17 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
             return
         }
         conversationRequest?.cancel()
+        clearConversationComposer()
         mutable.update {
             it.copy(
                 conversation = notification,
                 conversationMessages = emptyList(),
                 conversationBefore = 0,
                 conversationHasMore = false,
+                conversationDraft = "",
+                conversationImage = "",
+                conversationImageReady = false,
+                conversationSending = false,
             )
         }
         navigate("conversation")
@@ -1732,6 +2220,147 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                             .sortedBy { row -> row.sequence },
                     conversationBefore = page.before,
                     conversationHasMore = page.hasMore,
+                )
+            }
+        }
+    }
+
+    fun conversationDraft(value: String) {
+        if (state.value.conversationSending) return
+        mutable.update { it.copy(conversationDraft = value.take(ConversationSend.MaxTextLength)) }
+    }
+
+    fun appendConversationText(value: String) {
+        if (state.value.conversationSending) return
+        val current = state.value.conversationDraft
+        conversationDraft((current + value).take(ConversationSend.MaxTextLength))
+    }
+
+    private fun conversationOwner(): String = state.value.let {
+        "${it.profileId}:${it.conversation?.talkerId}:${it.conversation?.id}:${it.routeVisit}"
+    }
+
+    /** The picker result is only held in memory until the listener presses Send. */
+    fun setConversationImage(uri: Uri) {
+        if (state.value.conversationSending) return
+        if (uri.scheme != "content") {
+            message("请通过系统照片选择器选择图片")
+            return
+        }
+        val owner = conversationOwner()
+        val p = current()
+        conversationImageOwner = owner
+        profileScope.launch {
+            try {
+                val prepared =
+                    withContext(Dispatchers.IO) {
+                        io.github.sodarx.biliplay.comment.CommentImagePreparer.prepare(
+                            app.contentResolver,
+                            uri,
+                        )
+                    }
+                if (
+                    current() !== p ||
+                        state.value.route != "conversation" ||
+                        conversationOwner() != owner
+                )
+                    return@launch
+                pendingConversationImage = prepared
+                mutable.update {
+                    it.copy(conversationImage = uri.toString(), conversationImageReady = true)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (current() === p) message(e.message ?: "图片处理失败，请重新选择")
+            }
+        }
+    }
+
+    fun removeConversationImage() {
+        if (state.value.conversationSending) return
+        pendingConversationImage = null
+        conversationImageOwner = ""
+        mutable.update { it.copy(conversationImage = "", conversationImageReady = false) }
+    }
+
+    private fun clearConversationComposer() {
+        conversationSendJob?.cancel()
+        conversationSendJob = null
+        pendingConversationImage = null
+        conversationImageOwner = ""
+        mutable.update {
+            it.copy(
+                conversationDraft = "",
+                conversationImage = "",
+                conversationImageReady = false,
+                conversationSending = false,
+            )
+        }
+    }
+
+    /**
+     * A write may reach the server even when its acknowledgement is lost, so failures keep the
+     * draft for an explicit user retry and are never replayed automatically.
+     */
+    fun sendConversationMessage() {
+        val s = state.value
+        if (s.conversationSending || !requireLogin()) return
+        if (s.route != "conversation") return
+        val conversation = s.conversation ?: return
+        val self = s.account?.id ?: return
+        val text = s.conversationDraft.trim()
+        val picture = pendingConversationImage
+        if (text.isEmpty() && picture == null) return
+        val owner = conversationOwner()
+        val p = current()
+        mutable.update { it.copy(conversationSending = true) }
+        conversationSendJob = profileScope.launch {
+            try {
+                val account = p.api.account()
+                require(account.id == self && p.account?.id == self) { "账号已变更，请重新打开会话" }
+                val sentPicture = picture?.let { p.api.uploadCommentImage(it) }
+                p.api.sendConversationMessage(self, conversation.talkerId, text, sentPicture)
+                if (current() !== p || conversationOwner() != owner) return@launch
+                val message =
+                    DirectMessage(
+                        id = "local:${UUID.randomUUID()}",
+                        sender = self,
+                        text = if (sentPicture == null) text else "",
+                        image = sentPicture?.url.orEmpty(),
+                        sequence =
+                            (state.value.conversationMessages.map { it.sequence }.maxOrNull() ?: 0L) +
+                                1,
+                        timestamp = System.currentTimeMillis() / 1000,
+                        own = true,
+                    )
+                pendingConversationImage = null
+                conversationImageOwner = ""
+                mutable.update {
+                    it.copy(
+                        conversationMessages =
+                            (it.conversationMessages + message).distinctBy { row -> row.id },
+                        conversationDraft = "",
+                        conversationImage = "",
+                        conversationImageReady = false,
+                        conversationSending = false,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (current() !== p) return@launch
+                mutable.update { it.copy(conversationSending = false) }
+                if (e is ApiFailure && e.requiresLogin) {
+                    repo.markExpired(p.id)
+                    mutable.update { it.copy(account = null) }
+                }
+                message(
+                    when {
+                        e is ApiFailure -> e.message ?: "发送失败，请稍后重试"
+                        e is IllegalArgumentException -> e.message ?: "消息内容无效"
+                        else -> "发送失败，请检查网络后重试"
+                    }
                 )
             }
         }
@@ -1765,8 +2394,17 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
 
     fun download(track: Track) {
         dialog("download", track)
+        val p = current()
         mutable.update {
-            it.copy(downloadSources = emptyList(), downloadQuality = "标准", downloadBitrate = 192000)
+            it.copy(
+                downloadSources = emptyList(),
+                downloadQuality =
+                    PlaybackQuality.downloadDefault(
+                        p.preferences.read().preferredQuality,
+                        p.account?.vip == true,
+                    ),
+                downloadBitrate = 320000,
+            )
         }
         launch { p ->
             val t =
@@ -1776,7 +2414,18 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                         it.page == track.page
                     }
             val all = p.api.audio(t, p.account?.vip == true)
-            mutable.update { it.copy(actionTrack = t, downloadSources = all) }
+            mutable.update {
+                val chosen =
+                    PlaybackQuality.selectedName(
+                        all,
+                        current().preferences.read().preferredQuality,
+                    )
+                it.copy(
+                    actionTrack = t,
+                    downloadSources = all,
+                    downloadQuality = chosen.ifEmpty { PlaybackQuality.Standard },
+                )
+            }
         }
     }
 
@@ -1784,12 +2433,19 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
         mutable.update { it.copy(downloadQuality = value) }
     }
 
-    fun downloadBitrate(value: Int) {
-        mutable.update { it.copy(downloadBitrate = value) }
-    }
-
     fun confirmDownload() {
         val s = state.value
+        if (s.dialog == "batchDownload") {
+            val p = current()
+            val existing = p.library.downloads().filter { it.status in listOf("queued", "downloading", "encoding", "complete") }
+                .map { it.track.key }.toSet()
+            val tracks = s.batchDownloadTracks.filterNot { it.key in existing }
+            tracks.forEach { Downloads.enqueue(app, p, it, s.downloadQuality, s.downloadBitrate) }
+            mutable.update { it.copy(batchDownloadTracks = emptyList(), selectedFolderTracks = emptySet(), folderSelecting = false) }
+            dismissDialog()
+            message("已加入 ${tracks.size} 首下载任务，跳过已有下载")
+            return
+        }
         val track = s.actionTrack ?: return
         if (s.downloadSources.isEmpty()) return
         val p = current()
@@ -1888,6 +2544,11 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     fun clearImageCache() = launch {
         withContext(Dispatchers.IO) { SingletonImageLoader.get(app).diskCache?.clear() }
         SingletonImageLoader.get(app).memoryCache?.clear()
+        val bytes =
+            withContext(Dispatchers.IO) {
+                runCatching { SingletonImageLoader.get(app).diskCache?.size ?: 0L }.getOrDefault(0L)
+            }
+        mutable.update { it.copy(imageCacheBytes = bytes) }
         message("图片缓存已清理")
     }
 
@@ -1912,8 +2573,22 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
             val rows = p.api.personalMusic(next).map { it.track }
             if (epoch != homeEpoch) return@launch
             homePage = next
+            val seed = ++recommendationSeed
+            // 分页硬排除本批已展示与最近几批，避免滚动后重复出现同一首歌。
+            val excluded =
+                (state.value.likedMusic + state.value.dailyMusic + state.value.recommendations)
+                    .map { it.key }
+                    .toSet() + recommendationBatches.flatten().toSet()
             mutable.update {
-                val combined = (it.recommendations + rows).distinctBy { t -> t.key }
+                val added =
+                    RecommendationPolicy.section(
+                        rows,
+                        rows.size,
+                        RecommendationSignals(),
+                        seed,
+                        excluded,
+                    )
+                val combined = (it.recommendations + added).distinctBy { t -> t.key }
                 it.copy(
                     recommendations = combined,
                     homeHasMore = rows.isNotEmpty() && combined.size > it.recommendations.size,

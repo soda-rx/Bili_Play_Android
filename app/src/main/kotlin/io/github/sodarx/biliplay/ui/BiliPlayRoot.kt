@@ -92,6 +92,11 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                 )
             val searchState = rememberSearchBarState()
             val searchField = rememberTextFieldState(state.query)
+            LaunchedEffect(state.route) {
+                // 回到首页时搜索框应清空，避免残留上一次搜索文字。
+                if (state.route == "home" && searchField.text.isNotEmpty())
+                    searchField.edit { replace(0, length, "") }
+            }
             val scope = rememberCoroutineScope()
             var folderMenu by remember { mutableStateOf(false) }
             var quality by remember { mutableStateOf(false) }
@@ -315,8 +320,11 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                                 },
                                         title = {
                                             if (screen.route == "search")
-                                                Surface(shape = MaterialTheme.shapes.extraLarge) {
-                                                    searchInput()
+                                                SearchBar(state = searchState, inputField = searchInput,
+                                                    modifier = Modifier.fillMaxWidth())
+                                            else if (screen.route == "librarySearch")
+                                                key(screen.librarySearch?.session) {
+                                                    screen.librarySearch?.let { LibrarySearchInput(it, model) }
                                                 }
                                             else
                                                 Text(
@@ -341,6 +349,18 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                                 }
                                         },
                                         actions = {
+                                            val selecting =
+                                                (screen.route == "folder" && screen.folderSelecting) ||
+                                                    (screen.route == "uploader" &&
+                                                        screen.uploaderSelecting)
+                                            if (
+                                                screen.route in listOf("queue", "folder", "uploader") &&
+                                                    !selecting
+                                            ) {
+                                                IconButton(onClick = model::openLibrarySearch) {
+                                                    Icon(Icons.Default.Search, "搜索当前列表")
+                                                }
+                                            }
                                             when (screen.route) {
                                                 "login" ->
                                                     IconButton(onClick = model::startLogin) {
@@ -361,32 +381,102 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                                     }
                                                 }
                                                 "folder" ->
-                                                    if (screen.selectedFolder?.owned == true) {
+                                                    if (screen.folderSelecting) {
                                                         IconButton(
-                                                            onClick = { folderMenu = true }
+                                                            onClick = model::toggleFolderSelection,
+                                                            enabled = !screen.selectionBusy,
                                                         ) {
-                                                            Icon(Icons.Default.MoreVert, "收藏夹管理")
+                                                            Icon(Icons.Default.Close, "取消选择")
                                                         }
-                                                        DropdownMenu(
-                                                            folderMenu,
-                                                            { folderMenu = false },
+                                                        if (screen.selectedFolder?.owned == true)
+                                                            IconButton(
+                                                                onClick =
+                                                                    model::
+                                                                        requestUnfavoriteFolderSelection,
+                                                                enabled =
+                                                                    screen.selectedFolderTracks
+                                                                        .isNotEmpty() &&
+                                                                        !screen.selectionBusy,
+                                                            ) {
+                                                                Icon(
+                                                                    Icons.Default.HeartBroken,
+                                                                    "批量取消收藏",
+                                                                )
+                                                            }
+                                                        IconButton(
+                                                            onClick =
+                                                                model::downloadFolderSelection,
+                                                            enabled =
+                                                                screen.selectedFolderTracks
+                                                                    .isNotEmpty(),
                                                         ) {
-                                                            DropdownMenuItem(
-                                                                text = { Text("编辑收藏夹") },
-                                                                onClick = {
-                                                                    folderMenu = false
-                                                                    model.editFolder()
-                                                                },
+                                                            Icon(Icons.Default.Download, "批量下载")
+                                                        }
+                                                    } else {
+                                                        IconButton(
+                                                            onClick = model::toggleFolderSelection
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Default.Checklist,
+                                                                "选择歌曲",
                                                             )
-                                                            DropdownMenuItem(
-                                                                text = { Text("删除收藏夹") },
-                                                                onClick = {
-                                                                    folderMenu = false
-                                                                    model.dialog("deleteFolder")
-                                                                },
-                                                            )
+                                                        }
+                                                        if (screen.selectedFolder?.owned == true) {
+                                                            IconButton(
+                                                                onClick = { folderMenu = true }
+                                                            ) {
+                                                                Icon(
+                                                                    Icons.Default.MoreVert,
+                                                                    "收藏夹管理",
+                                                                )
+                                                            }
+                                                            DropdownMenu(
+                                                                folderMenu,
+                                                                { folderMenu = false },
+                                                            ) {
+                                                                DropdownMenuItem(
+                                                                    text = { Text("编辑收藏夹") },
+                                                                    onClick = {
+                                                                        folderMenu = false
+                                                                        model.editFolder()
+                                                                    },
+                                                                )
+                                                                DropdownMenuItem(
+                                                                    text = { Text("删除收藏夹") },
+                                                                    onClick = {
+                                                                        folderMenu = false
+                                                                        model.dialog("deleteFolder")
+                                                                    },
+                                                                )
+                                                            }
                                                         }
                                                     }
+                                                "uploader" ->
+                                                    if (screen.uploaderSelecting) {
+                                                        IconButton(
+                                                            onClick = model::toggleUploaderSelection,
+                                                            enabled = !screen.selectionBusy,
+                                                        ) {
+                                                            Icon(Icons.Default.Close, "取消选择")
+                                                        }
+                                                        IconButton(
+                                                            onClick =
+                                                                model::downloadUploaderSelection,
+                                                            enabled =
+                                                                screen.selectedUploaderTracks
+                                                                    .isNotEmpty(),
+                                                        ) {
+                                                            Icon(Icons.Default.Download, "批量下载")
+                                                        }
+                                                    } else
+                                                        IconButton(
+                                                            onClick = model::toggleUploaderSelection
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Default.Checklist,
+                                                                "选择歌曲",
+                                                            )
+                                                        }
                                                 "mine" ->
                                                     IconButton(
                                                         onClick = {
@@ -424,20 +514,28 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                                         Icon(Icons.Default.DeleteOutline, "清除记录")
                                                     }
                                                 "downloads" -> {
+                                                    val available =
+                                                        screen.downloads.any {
+                                                            if (screen.downloadTasks)
+                                                                it.status != "complete"
+                                                            else it.status == "complete"
+                                                        }
                                                     IconButton(
-                                                        onClick = model::selectAllDownloads
+                                                        onClick = model::selectAllDownloads,
+                                                        enabled = available,
                                                     ) {
-                                                        Icon(Icons.Default.SelectAll, "全选已下载歌曲")
+                                                        Icon(Icons.Default.Checklist, "全选已下载歌曲")
                                                     }
-                                                    IconButton(
-                                                        onClick = {
-                                                            model.dialog("deleteDownloads")
-                                                        },
-                                                        enabled =
-                                                            screen.selectedDownloads.isNotEmpty(),
-                                                    ) {
-                                                        Icon(Icons.Default.DeleteOutline, "删除所选下载")
-                                                    }
+                                                    if (available || screen.selectedDownloads.isNotEmpty())
+                                                        IconButton(
+                                                            onClick = {
+                                                                model.dialog("deleteDownloads")
+                                                            },
+                                                            enabled =
+                                                                screen.selectedDownloads.isNotEmpty(),
+                                                        ) {
+                                                            Icon(Icons.Default.DeleteOutline, "删除所选下载")
+                                                        }
                                                 }
                                                 "player" -> {
                                                     if (screen.playerLyrics) {
@@ -464,12 +562,6 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                                     IconButton(onClick = model::startLogin) {
                                                         Icon(Icons.Default.PersonAdd, "添加账号")
                                                     }
-                                                "search" ->
-                                                    IconButton(
-                                                        onClick = { model.navigate("home") }
-                                                    ) {
-                                                        Icon(Icons.Default.Search, "修改搜索")
-                                                    }
                                             }
                                         },
                                     )
@@ -488,6 +580,7 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                     when (screen.route) {
                                         "home" -> Home(screen, model)
                                         "search" -> SearchResults(screen, model)
+                                        "librarySearch" -> LibrarySearchScreen(screen, model)
                                         "favorites" -> FavoritesScreen(screen, model)
                                         "folder" -> FolderScreen(screen, model)
                                         "mine" -> FeatureMine(screen, model)
@@ -534,6 +627,7 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                     }
                 }
             }
+            AppUpdateUi(state.agreementAccepted)
             if (commentsOpen) CommentSheet(state, model, snackbar)
             ExpandedFullScreenSearchBar(state = searchState, inputField = searchInput) {
                 SearchSuggestions(
@@ -595,7 +689,7 @@ private fun screenTitle(s: AppState) =
         "queue" -> "播放队列"
         "history" -> "历史记录"
         "folder" -> s.selectedFolder?.title ?: "收藏夹"
-        "uploader" -> "UP 主"
+        "uploader" -> if (s.ownSpace) "个人空间" else "UP 主"
         "social" -> if (s.socialFollowers) "粉丝" else "关注"
         "notifications" -> "通知中心"
         "notificationDetail" -> s.selectedNotification?.title?.ifBlank { "通知内容" } ?: "通知内容"

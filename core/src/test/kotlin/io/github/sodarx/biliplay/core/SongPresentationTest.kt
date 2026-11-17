@@ -36,6 +36,17 @@ class SongPresentationTest {
     }
 
     @Test
+    fun unquotedTitlesPeelEdgeMetadataWithoutInventingNames() {
+        assertEquals("晴天", SongTitles.display("晴天【高音质】"))
+        assertEquals("晴天", SongTitles.display("【4K 60帧】晴天"))
+        assertEquals("夜曲", SongTitles.display("【翻唱】夜曲 (Live)"))
+        assertEquals("晴天 - 周杰伦", SongTitles.display("晴天 - 周杰伦 【高音质】"))
+        // Nothing removable keeps the exact source string.
+        assertEquals("未闭合《歌曲", SongTitles.display("未闭合《歌曲"))
+        assertEquals("晴天", SongTitles.display("《晴天》完整版"))
+    }
+
+    @Test
     fun htmlQuotesAndApostropheInsideNamesAreHandled() {
         assertEquals("Song", SongTitles.display("前缀 &quot;Song&quot; 后缀"))
         assertEquals("Don't Stop", SongTitles.display("Live 'Don't Stop' cover"))

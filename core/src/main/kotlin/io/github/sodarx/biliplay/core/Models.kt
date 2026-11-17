@@ -31,7 +31,10 @@ data class AudioSource(
     val backups: List<String>,
     val quality: String,
     val mime: String,
+    val segments: List<AudioSegment> = emptyList(),
 )
+
+data class AudioSegment(val url: String, val backups: List<String>, val durationMs: Long, val mime: String)
 
 data class VideoInput(val bvid: String, val page: Int = 1, val aid: Long = 0)
 

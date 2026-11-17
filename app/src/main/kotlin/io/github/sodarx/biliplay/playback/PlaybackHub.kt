@@ -3,6 +3,8 @@ package io.github.sodarx.biliplay.playback
 import android.net.Uri
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.ConcatenatingMediaSource2
 import io.github.sodarx.biliplay.core.*
 import io.github.sodarx.biliplay.data.*
 import kotlin.random.Random
@@ -29,6 +31,7 @@ data class PlaybackSnapshot(
     val profileId: String = "guest",
 )
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackHub(private val repository: AppRepository) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutable = MutableStateFlow(PlaybackSnapshot())
@@ -36,9 +39,10 @@ class PlaybackHub(private val repository: AppRepository) {
     private var player: ExoPlayer? = null
     private var load: Job? = null
     private var retries = 0
-    private var candidateIndex = 0
-    private var candidates: List<String> = emptyList()
-    private var currentMime = "audio/mp4"
+    private var mediaFactory: MediaSource.Factory? = null
+    private var activeSource: AudioSource? = null
+    private var sourceChoices = IntArray(0)
+    private val failedTracks = mutableSetOf<String>()
     private var profileId = repository.profile.value.id
     private var playEpoch = 0L
     private var restored = false
@@ -88,6 +92,8 @@ class PlaybackHub(private val repository: AppRepository) {
                     done.await()
                 }
                 cancelLoading()
+                failedTracks.clear()
+                activeSource = null
                 player?.stop()
                 player?.clearMediaItems()
                 profileId = p.id
@@ -149,8 +155,9 @@ class PlaybackHub(private val repository: AppRepository) {
         }
     }
 
-    fun attach(value: ExoPlayer) {
+    fun attach(value: ExoPlayer, factory: MediaSource.Factory) {
         player = value
+        mediaFactory = factory
         value.addListener(
             object : Player.Listener {
                 override fun onEvents(player: Player, events: Player.Events) = synchronize()
@@ -161,13 +168,13 @@ class PlaybackHub(private val repository: AppRepository) {
 
                 override fun onPlayerError(error: PlaybackException) {
                     val t = state.value.current
-                    if (t != null && t.localUri.isEmpty() && candidateIndex + 1 < candidates.size) {
-                        candidateIndex++
-                        val position = state.value.position
-                        player?.setMediaItem(
-                            item(t, candidates[candidateIndex], currentMime),
-                            position,
-                        )
+                    val source = activeSource
+                    val part = value.currentPeriodIndex.coerceIn(0, (sourceChoices.size - 1).coerceAtLeast(0))
+                    val backups = source?.segments?.getOrNull(part)?.backups ?: source?.backups.orEmpty()
+                    if (t != null && t.localUri.isEmpty() && source != null &&
+                        part in sourceChoices.indices && sourceChoices[part] < backups.size) {
+                        sourceChoices[part]++
+                        setSource(value, t, source, state.value.position)
                         player?.prepare()
                         player?.play()
                     } else if (t != null && t.localUri.isEmpty() && retries++ < 1)
@@ -182,7 +189,17 @@ class PlaybackHub(private val repository: AppRepository) {
                         val reason =
                             http?.let { "音源连接失败（HTTP ${it.responseCode}）" }
                                 ?: "播放失败（${error.errorCodeName}）"
-                        mutable.update { it.copy(loading = false, error = reason) }
+                        val canSkip = http?.responseCode in setOf(404, 410) || error.errorCode in setOf(
+                            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+                            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                            PlaybackException.ERROR_CODE_DECODING_FAILED)
+                        val s = state.value
+                        if (t == null || !recover(t, s.queue, s.queueIndex, s.origin, canSkip)) {
+                            player?.pause()
+                            mutable.update { it.copy(loading = false, error = reason) }
+                        }
                     }
                 }
             }
@@ -194,6 +211,7 @@ class PlaybackHub(private val repository: AppRepository) {
         persist()
         load?.cancel()
         player = null
+        mediaFactory = null
         mutable.update { it.copy(playing = false, loading = false) }
     }
 
@@ -225,8 +243,13 @@ class PlaybackHub(private val repository: AppRepository) {
         retry: Boolean = false,
         origin: PlaybackOrigin? = if (queue == null) state.value.origin else null,
         queueIndex: Int? = null,
+        recovering: Boolean = false,
     ): Job {
         if (!retry) retries = 0
+        if (!retry && !recovering) failedTracks.clear()
+        val attemptQueue = queue ?: state.value.queue.let { if (it.any { row -> row.key == track.key }) it else it + track }
+        val attemptIndex = QueueMembership.restoredIndex(attemptQueue, track,
+            queueIndex ?: if (state.value.current?.key == track.key) state.value.queueIndex else -1)
         val profile = repository.profile.value
         load?.cancel()
         val epoch = ++playEpoch
@@ -252,6 +275,8 @@ class PlaybackHub(private val repository: AppRepository) {
                     else profile.api.audio(resolved, profile.account?.vip == true)
                 if (repository.profile.value !== profile || epoch != playEpoch) return@launch
                 val p = player ?: throw IllegalStateException("播放器尚未连接")
+                val sourceIndex = PlaybackQuality.select(sources, profile.preferences.read().preferredQuality)
+                val source = sources.getOrNull(sourceIndex)
                 val nextQueue =
                     (queue
                             ?: state.value.queue.let { q ->
@@ -287,21 +312,15 @@ class PlaybackHub(private val repository: AppRepository) {
                         queueIndex = selectedIndex,
                         origin = origin,
                         sources = sources,
-                        qualityIndex = 0,
+                        qualityIndex = sourceIndex,
                         position = start,
                         duration = resolved.duration.coerceAtLeast(0) * 1000,
                     )
                 }
-                candidateIndex = 0
-                candidates =
-                    if (local != null) emptyList()
-                    else (listOf(sources.first().url) + sources.first().backups).distinct()
-                currentMime = if (local != null) "audio/mpeg" else sources.first().mime
-                val uri = local?.uri ?: candidates.first()
-                p.setMediaItem(
-                    item(resolved, uri, if (local != null) "audio/mpeg" else sources.first().mime),
-                    start,
-                )
+                activeSource = source
+                sourceChoices = IntArray(source?.segments?.size?.coerceAtLeast(1) ?: 0)
+                if (local != null) p.setMediaItem(item(resolved, local.uri, "audio/mpeg"), start)
+                else setSource(p, resolved, checkNotNull(source), start)
                 p.prepare()
                 p.setPlaybackSpeed(state.value.speed)
                 p.play()
@@ -311,9 +330,14 @@ class PlaybackHub(private val repository: AppRepository) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (repository.profile.value !== profile || epoch != playEpoch) return@launch
                 if (e is ApiFailure && e.requiresLogin) repository.markExpired(profile.id)
-                mutable.update {
-                    it.copy(error = if (e is ApiFailure) e.message else "播放失败，请检查网络或下载文件")
+                val canSkip = e is ApiFailure && PlaybackRecovery.canSkipApi(e.code)
+                if (!recover(track, attemptQueue, attemptIndex, origin, canSkip)) {
+                    player?.pause()
+                    mutable.update {
+                        it.copy(error = if (e is ApiFailure) e.message else "播放失败，请检查网络或下载文件")
+                    }
                 }
             } finally {
                 if (repository.profile.value === profile && epoch == playEpoch)
@@ -321,6 +345,30 @@ class PlaybackHub(private val repository: AppRepository) {
             }
         }
         return checkNotNull(load)
+    }
+
+    private fun recover(track: Track, queue: List<Track>, index: Int, origin: PlaybackOrigin?, allowed: Boolean): Boolean {
+        if (!allowed) return false
+        failedTracks += track.key
+        val next = PlaybackRecovery.next(queue, index, failedTracks, state.value.mode, Random.nextInt()) ?: return false
+        play(queue[next], queue, 0, origin = origin, queueIndex = next, recovering = true)
+        return true
+    }
+
+    private fun setSource(p: ExoPlayer, track: Track, source: AudioSource, position: Long) {
+        fun url(primary: String, backups: List<String>, index: Int): String =
+            (listOf(primary) + backups).getOrElse(sourceChoices.getOrElse(index) { 0 }) { primary }
+        if (source.segments.size <= 1) {
+            p.setMediaItem(item(track, url(source.url, source.backups, 0), source.mime), position)
+        } else {
+            val builder = ConcatenatingMediaSource2.Builder().setMediaSourceFactory(checkNotNull(mediaFactory))
+                .setMediaItem(item(track, source.url, source.mime))
+            source.segments.forEachIndexed { index, segment ->
+                builder.add(item(track, url(segment.url, segment.backups, index), segment.mime),
+                    segment.durationMs.takeIf { it > 0 } ?: C.TIME_UNSET)
+            }
+            p.setMediaSource(builder.build(), position)
+        }
     }
 
     private fun item(t: Track, uri: String, mime: String) =
@@ -448,8 +496,9 @@ class PlaybackHub(private val repository: AppRepository) {
 
     private fun resetActualPlayback(queue: List<Track> = emptyList()) {
         cancelLoading()
-        candidates = emptyList()
-        candidateIndex = 0
+        activeSource = null
+        sourceChoices = IntArray(0)
+        failedTracks.clear()
         retries = 0
         mutable.update {
             PlaybackSnapshot(
@@ -472,16 +521,19 @@ class PlaybackHub(private val repository: AppRepository) {
         val source = s.sources.getOrNull(index) ?: return
         val track = s.current ?: return
         val p = player ?: return
-        candidates = (listOf(source.url) + source.backups).distinct()
-        candidateIndex = 0
-        currentMime = source.mime
+        cancelLoading()
+        val preferences = repository.profile.value.preferences
+        preferences.write(preferences.read().copy(preferredQuality = source.quality))
+        mutable.update { it.copy(qualityIndex = index, error = null) }
+        activeSource = source
+        sourceChoices = IntArray(source.segments.size.coerceAtLeast(1))
         retries = 0
         val resume = p.playWhenReady
         val position = p.currentPosition
-        p.setMediaItem(item(track, source.url, source.mime), position)
+        setSource(p, track, source, position)
         p.prepare()
+        p.setPlaybackSpeed(s.speed)
         p.playWhenReady = resume
-        mutable.update { it.copy(qualityIndex = index) }
     }
 
     fun checkpoint() {

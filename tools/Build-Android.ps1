@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$ToolchainFile, [switch]$VerifyRelease, [switch]$Deliver)
+param([Parameter(Mandatory)][string]$ToolchainFile, [switch]$VerifyRelease, [switch]$Deliver, [string]$DevelopmentKeystore)
 $ErrorActionPreference = 'Stop'
 $androidRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 & python -B (Join-Path $PSScriptRoot 'check_release.py')
@@ -12,10 +12,26 @@ $env:ANDROID_USER_HOME = Join-Path $env:ANDROID_PREFS_ROOT '.android'
 New-Item -ItemType Directory -Path $env:ANDROID_USER_HOME -Force | Out-Null
 $env:PATH = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:PATH
 New-Item -ItemType Directory -Path $toolchain.signingDirectory -Force | Out-Null
-$env:BILIPLAY_DEVELOPMENT_KEYSTORE = Join-Path $toolchain.signingDirectory 'io.github.sodarx.biliplay.development.jks'
+$env:BILIPLAY_DEVELOPMENT_KEYSTORE = if ($DevelopmentKeystore) { [IO.Path]::GetFullPath($DevelopmentKeystore) } else { Join-Path $toolchain.signingDirectory 'io.github.sodarx.biliplay.development.jks' }
+if ([IO.Path]::GetFullPath($env:BILIPLAY_DEVELOPMENT_KEYSTORE).StartsWith($androidRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw '签名私钥必须保存在安卓工作区之外。'
+}
 if (-not (Test-Path -LiteralPath $env:BILIPLAY_DEVELOPMENT_KEYSTORE)) {
+    if ($Deliver -or $DevelopmentKeystore) { throw '未找到既有签名密钥，停止交付；不会为覆盖升级自动生成新签名。' }
     & (Join-Path $env:JAVA_HOME 'bin/keytool.exe') -genkeypair -keystore $env:BILIPLAY_DEVELOPMENT_KEYSTORE -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Bili Play Android Development'
     if ($LASTEXITCODE -ne 0) { throw '开发签名生成失败。' }
+}
+if ($Deliver) {
+    $policy = Get-Content -LiteralPath (Join-Path $androidRoot 'release-policy.json') -Raw | ConvertFrom-Json
+    $expectedSigner = $policy.developmentSignerSha256
+    if ($expectedSigner -notmatch '^[0-9a-fA-F]{64}$') { throw '未配置可信的旧版签名指纹，停止交付。' }
+    # Export only the public certificate into memory; never copy or print the private key.
+    $publicCertificate = & (Join-Path $env:JAVA_HOME 'bin/keytool.exe') -exportcert -rfc -keystore $env:BILIPLAY_DEVELOPMENT_KEYSTORE -storepass android -alias androiddebugkey 2>$null
+    if ($LASTEXITCODE -ne 0) { throw '无法读取签名证书，请核对既有开发密钥；未输出密钥内容。' }
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem(($publicCertificate -join "`n"))
+    try { $actualSigner = $certificate.GetCertHashString([Security.Cryptography.HashAlgorithmName]::SHA256) }
+    finally { $certificate.Dispose(); $publicCertificate = $null }
+    if ($actualSigner -ne $expectedSigner) { throw '签名与旧版安装包不匹配，停止交付；需要原始签名密钥。' }
 }
 Push-Location $androidRoot
 try {
@@ -58,8 +74,10 @@ try {
         $apksigner = Join-Path $toolchain.sdk 'build-tools/36.0.0/apksigner.bat'
         & $apksigner sign --ks $env:BILIPLAY_DEVELOPMENT_KEYSTORE --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out $signed $releaseApk
         if ($LASTEXITCODE -ne 0) { throw 'APK 签名失败。' }
-        & $apksigner verify $signed
+        $signerReport = & $apksigner verify --print-certs $signed
         if ($LASTEXITCODE -ne 0) { throw 'APK 签名校验失败。' }
+        $signerMatches = [regex]::Matches(($signerReport -join "`n"), '(?im)^Signer #\d+ certificate SHA-256 digest:\s*([0-9a-f]{64})\s*$')
+        if ($signerMatches.Count -ne 1 -or $signerMatches[0].Groups[1].Value -ne $expectedSigner) { throw '最终 APK 签名与旧版不匹配，停止交付。' }
         & (Join-Path $PSScriptRoot 'Check-Privacy.ps1') -Apk $signed
         [IO.File]::Copy($signed, $delivery, $false)
         & (Join-Path $PSScriptRoot 'Check-Privacy.ps1') -Apk $delivery

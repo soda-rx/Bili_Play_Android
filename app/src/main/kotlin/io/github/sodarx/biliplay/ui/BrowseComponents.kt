@@ -4,6 +4,8 @@ package io.github.sodarx.biliplay.ui
 
 import android.net.Uri
 import androidx.compose.animation.*
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -23,7 +25,6 @@ import io.github.sodarx.biliplay.core.Track
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
 @Composable
 internal fun FeatureTrackRow(
     track: Track,
@@ -52,6 +53,62 @@ internal fun FeatureTrackRow(
         },
     )
 }
+
+/**
+ * Song row for folder/UP-space selection. Uses the native MD3 ListItem; the checkbox expands on
+ * the left and pushes the row content to the right with the app spatial spring.
+ */
+@Composable
+internal fun SelectableTrackRow(
+    track: Track,
+    selecting: Boolean,
+    selected: Boolean,
+    onToggle: () -> Unit,
+    onPlay: () -> Unit,
+    onMenu: (() -> Unit)? = null,
+) {
+    val enter =
+        androidx.compose.animation.expandHorizontally(
+            animationSpec = tween(180, easing = FastOutSlowInEasing)
+        ) + fadeIn(tween(180))
+    val exit =
+        androidx.compose.animation.shrinkHorizontally(
+            animationSpec = tween(140, easing = FastOutSlowInEasing)
+        ) + fadeOut(tween(140))
+    ListItem(
+        onClick = { if (selecting) onToggle() else onPlay() },
+        onLongClick = if (!selecting) onMenu else null,
+        onLongClickLabel = "歌曲操作",
+        leadingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AnimatedVisibility(visible = selecting, enter = enter, exit = exit) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(selected, onCheckedChange = { onToggle() })
+                        Spacer(Modifier.width(12.dp))
+                    }
+                }
+                Artwork(track, 48)
+            }
+        },
+        content = { Text(songTitle(track.title), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        supportingContent = {
+            Text(track.uploader, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        trailingContent = {
+            if (!selecting && onMenu != null)
+                IconButton(onClick = onMenu) { Icon(Icons.Default.MoreVert, "歌曲操作") }
+        },
+    )
+}
+
+/** Compact fan/video counts used beside the follow button. */
+internal fun compactCount(value: Long): String =
+    when {
+        value >= 100_000_000 -> String.format(Locale.ROOT, "%.1f亿", value / 100_000_000.0)
+        value >= 10_000 -> String.format(Locale.ROOT, "%.1f万", value / 10_000.0)
+        value >= 0 -> value.toString()
+        else -> "0"
+    }
 
 @Composable
 internal fun Artwork(track: Track, size: Int) {
@@ -100,7 +157,7 @@ internal fun EmptyContent(text: String, onRetry: (() -> Unit)? = null) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (onRetry != null) TextButton(onClick = onRetry) { Text("重试") }
+        if (onRetry != null) TextButton(onClick = onRetry) { Text("刷新") }
     }
 }
 
@@ -122,7 +179,13 @@ internal fun LoadMore(visible: Boolean, state: AppState, model: BiliPlayViewMode
             "conversation" -> state.conversationMessages.size
             else -> 0
         }
-    var requested by remember(state.profileId, state.route) { mutableStateOf<Int?>(null) }
+    val searchCursor = when (state.route) {
+        "folder" -> "${state.selectedFolder?.id}:${state.folderPage}"
+        "uploader" -> "${state.selectedUploader?.id}:${state.uploaderPage}"
+        "search" -> "${state.query}:${state.searchKind}:${state.searchPage}"
+        else -> ""
+    }
+    var requested by remember(state.profileId, state.route, searchCursor) { mutableStateOf<Int?>(null) }
     val busy = state.loading || state.homeRefreshing
     LaunchedEffect(onScreen, busy, count, state.pageError) {
         if (onScreen && !busy && state.pageError == null && requested != count) {

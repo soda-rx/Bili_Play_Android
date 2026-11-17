@@ -63,21 +63,29 @@ class CoverPresentationTest {
     fun likesContainDifferentCreatorsAndRotateCreatorsOnRefresh() {
         val pool = (1..9).map { track(it).copy(uploaderId = it.toLong()) }
         val previous = pool.take(3)
-        val result = LikedSelection.select(pool, previous)
+        val result =
+            RecommendationPolicy.pick(
+                pool,
+                3,
+                RecommendationSignals(recentBatches = listOf(previous.map { it.key }.toSet())),
+                seed = 1,
+            )
         assertEquals(3, result.map { it.uploaderId }.distinct().size)
-        assertTrue(result.none { it.uploaderId in previous.map { old -> old.uploaderId } })
+        assertTrue(result.none { old -> previous.any { it.key == old.key } })
     }
 
     @Test
     fun repeatedCreatorCannotFillAllThreeSlots() {
         val pool = (1..6).map { track(it).copy(uploaderId = if (it < 5) 1L else it.toLong()) }
-        assertEquals(3, LikedSelection.select(pool).map { it.uploaderId }.distinct().size)
+        assertEquals(3, RecommendationPolicy.pick(pool, 3).map { it.uploaderId }.distinct().size)
     }
 
     @Test
-    fun shortCreatorPoolDoesNotInventExtraRecommendations() {
+    fun shortCreatorPoolStillFillsOnlyFromThePool() {
         val pool = (1..5).map { track(it).copy(uploaderId = 1L) }
-        assertEquals(1, LikedSelection.select(pool).size)
+        val result = RecommendationPolicy.pick(pool, 3)
+        assertEquals(3, result.size)
+        assertTrue(result.all { row -> pool.any { it.key == row.key } })
     }
 
     private fun track(id: Int) =
@@ -93,24 +101,29 @@ class CoverPresentationTest {
     @Test
     fun likedSectionContainsExactlyThreeUniqueSongsWhenAvailable() {
         val pool = (1..8).map(::track)
-        assertEquals(3, LikedSelection.select(pool + pool).size)
-        assertEquals(3, LikedSelection.select(pool + pool).map { it.key }.distinct().size)
+        assertEquals(3, RecommendationPolicy.pick(pool + pool, 3).size)
+        assertEquals(3, RecommendationPolicy.pick(pool + pool, 3).map { it.key }.distinct().size)
     }
 
     @Test
     fun refreshingLikesAvoidsPreviousThreeWithoutChangingPool() {
         val pool = (1..8).map(::track)
         val previous = pool.take(3)
-        val result = LikedSelection.select(pool, previous, 3)
+        val result =
+            RecommendationPolicy.pick(
+                pool,
+                3,
+                RecommendationSignals(recentBatches = listOf(previous.map { it.key }.toSet())),
+            )
         assertEquals(3, result.size)
-        assertTrue(result.none { it in previous })
+        assertTrue(result.none { row -> previous.any { it.key == row.key } })
         assertEquals(8, pool.size)
     }
 
     @Test
     fun shortAndEmptyRecommendationListsNeverInventSongs() {
-        assertTrue(LikedSelection.select(emptyList()).isEmpty())
+        assertTrue(RecommendationPolicy.pick(emptyList(), 3).isEmpty())
         val pool = listOf(track(1), track(2))
-        assertEquals(pool, LikedSelection.select(pool))
+        assertEquals(pool.map { it.key }.toSet(), RecommendationPolicy.pick(pool, 3).map { it.key }.toSet())
     }
 }

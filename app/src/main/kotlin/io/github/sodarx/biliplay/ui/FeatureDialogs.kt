@@ -67,12 +67,19 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                     )
                     .verticalScroll(rememberScrollState())
             ) {
-                Text(
-                    songTitle(track.title),
-                    Modifier.padding(20.dp),
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 2,
-                )
+                Column(Modifier.padding(20.dp)) {
+                    Text(
+                        songTitle(track.title),
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 2,
+                    )
+                    Text(
+                        track.uploader,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
                 FeatureEntry(
                     "播放",
                     Icons.Default.PlayArrow,
@@ -81,16 +88,18 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                         m.play(track)
                     },
                 )
-                FeatureEntry(
-                    "加入播放队列",
-                    Icons.AutoMirrored.Filled.PlaylistAdd,
-                    onClick = { m.enqueue(track) },
-                )
-                FeatureEntry(
-                    "下一首播放并加入播放队列",
-                    Icons.Default.SkipNext,
-                    onClick = { m.enqueue(track, true) },
-                )
+                if (s.route != "queue") {
+                    FeatureEntry(
+                        "加入播放队列",
+                        Icons.AutoMirrored.Filled.PlaylistAdd,
+                        onClick = { m.enqueue(track) },
+                    )
+                    FeatureEntry(
+                        "下一首播放并加入播放队列",
+                        Icons.Default.SkipNext,
+                        onClick = { m.enqueue(track, true) },
+                    )
+                }
                 val folderMembership =
                     s.route == "folder" &&
                         s.selectedFolder?.owned == true &&
@@ -187,51 +196,83 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                 }
             }
         "favorite" ->
-            AlertDialog(
-                onDismissRequest = m::dismissDialog,
-                title = { Text("收藏到") },
-                confirmButton = { TextButton(onClick = m::dismissDialog) { Text("完成") } },
-                dismissButton = {
-                    TextButton(onClick = m::newFolder, enabled = !s.favoriteSaving) { Text("新建") }
-                },
-                text = {
-                    Column(Modifier.verticalScroll(rememberScrollState())) {
-                        s.folders
-                            .filter { it.owned }
-                            .forEach { folder ->
-                                val selected = s.actionFavorites?.get(folder.id) == true
-                                ListItem(
-                                    colors =
-                                        ListItemDefaults.colors(containerColor = Color.Transparent),
-                                    onClick = { m.setFavorite(folder, !selected) },
-                                    enabled =
-                                        s.actionFavorites != null &&
-                                            !s.favoriteSaving &&
-                                            !s.loading,
-                                    content = { Text(folder.title) },
-                                    trailingContent = {
-                                        Checkbox(
-                                            checked = selected,
-                                            onCheckedChange = { m.setFavorite(folder, it) },
-                                            enabled =
-                                                s.actionFavorites != null &&
-                                                    !s.favoriteSaving &&
-                                                    !s.loading,
-                                        )
-                                    },
-                                )
-                            }
-                        if (s.folders.none { it.owned }) Text("暂无可写收藏夹")
-                        if (s.actionFavorites == null) {
-                            if (s.pageError != null)
-                                TextButton(onClick = { s.actionTrack?.let(m::chooseFavorite) }) {
-                                    Text("重试读取收藏状态")
+            androidx.compose.ui.window.Dialog(onDismissRequest = m::dismissDialog) {
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 6.dp,
+                ) {
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .padding(start = 24.dp, end = 12.dp, top = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "收藏到",
+                                Modifier.weight(1f),
+                                style = MaterialTheme.typography.headlineSmall,
+                            )
+                            IconButton(
+                                onClick = m::newFolder,
+                                enabled = !s.favoriteSaving,
+                            ) { Icon(Icons.Default.Add, "新建收藏夹") }
+                        }
+                        Column(
+                            Modifier.heightIn(max = 360.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            s.folders
+                                .filter { it.owned }
+                                .forEach { folder ->
+                                    val selected = s.actionFavorites?.get(folder.id) == true
+                                    ListItem(
+                                        colors =
+                                            ListItemDefaults.colors(
+                                                containerColor = Color.Transparent
+                                            ),
+                                        onClick = { m.setFavorite(folder, !selected) },
+                                        enabled =
+                                            s.actionFavorites != null &&
+                                                !s.favoriteSaving &&
+                                                !s.loading,
+                                        content = { Text(folder.title) },
+                                        trailingContent = {
+                                            Checkbox(
+                                                checked = selected,
+                                                onCheckedChange = { m.setFavorite(folder, it) },
+                                                enabled =
+                                                    s.actionFavorites != null &&
+                                                        !s.favoriteSaving &&
+                                                        !s.loading,
+                                            )
+                                        },
+                                    )
                                 }
-                            else CircularWavyProgressIndicator(Modifier.size(24.dp))
+                            if (s.folders.none { it.owned })
+                                Text("暂无可写收藏夹", Modifier.padding(24.dp))
+                            if (s.actionFavorites == null) {
+                                if (s.pageError != null)
+                                    TextButton(
+                                        onClick = { s.actionTrack?.let(m::chooseFavorite) }
+                                    ) { Text("刷新读取收藏状态") }
+                                else
+                                    Box(
+                                        Modifier.fillMaxWidth().padding(16.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) { CircularWavyProgressIndicator(Modifier.size(24.dp)) }
+                            }
+                        }
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            TextButton(onClick = m::dismissDialog) { Text("取消") }
+                            TextButton(onClick = m::dismissDialog) { Text("完成") }
                         }
                     }
-                },
-            )
+                }
+            }
         "folderActions" -> {
             val folder = s.selectedFolder ?: return
             ModalBottomSheet(onDismissRequest = m::dismissDialog) {
@@ -308,6 +349,18 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                         }
                 }
             }
+        "batchDownload" -> FeatureDialog(
+            "下载所选 ${s.batchDownloadTracks.size} 首歌曲", m, "下载", onDownload, true,
+            s.batchDownloadTracks.isNotEmpty(),
+        ) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("按所选音质下载，不支持时使用标准音质；已有下载会跳过。")
+                (if (s.account?.vip == true) listOf("标准", "Hi-Res") else listOf("标准")).forEach { quality ->
+                    ListItem(onClick = { m.downloadQuality(quality) }, content = { Text(quality) },
+                        leadingContent = { RadioButton(s.downloadQuality == quality, { m.downloadQuality(quality) }) })
+                }
+            }
+        }
         "download" ->
             FeatureDialog(
                 "下载音乐",
@@ -335,22 +388,6 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                             },
                         )
                     }
-                    HorizontalDivider()
-                    listOf(192000, 320000).forEach { bitrate ->
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            onClick = { m.downloadBitrate(bitrate) },
-                            content = { Text("MP3 · ${bitrate/1000} kbps") },
-                            leadingContent = {
-                                RadioButton(
-                                    s.downloadBitrate == bitrate,
-                                    { m.downloadBitrate(bitrate) },
-                                )
-                            },
-                        )
-                    }
-                    if (s.downloadQuality.startsWith("Hi-Res"))
-                        Text("MP3 转码不保留无损音质", style = MaterialTheme.typography.bodySmall)
                 }
             }
         "clickPolicy" ->
@@ -396,12 +433,13 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                     "clearHistory" -> "清除播放记录？"
                     "clearQueue" -> "清空播放队列？"
                     "logout" -> "退出当前账号？"
+                    "unfavoriteSelection" -> "取消收藏所选歌曲？"
                     else -> "确认操作？"
                 }
             FeatureDialog(
                 title,
                 m,
-                "确认",
+                if (type == "unfavoriteSelection") "取消收藏" else "确认",
                 onConfirm = {
                     when (type) {
                         "deleteFolder" -> m.deleteFolder()
@@ -409,6 +447,7 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                         "clearHistory" -> m.clearHistory()
                         "clearQueue" -> m.clearQueue()
                         "logout" -> m.logout()
+                        "unfavoriteSelection" -> m.confirmUnfavoriteFolderSelection()
                         else -> m.dismissDialog()
                     }
                 },
@@ -418,6 +457,7 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
                     when (type) {
                         "deleteDownloads" -> "将删除所选文件，操作无法撤销。"
                         "deleteFolder" -> "此操作会同步到哔哩哔哩。"
+                        "unfavoriteSelection" -> "将从当前收藏夹移除所选歌曲，并同步到哔哩哔哩。"
                         "logout" -> "本地记录和下载文件会保留。"
                         else -> "仅影响当前账号的本机记录。"
                     }

@@ -35,6 +35,7 @@ internal fun PlayerMediaPager(
     sharedArtwork: Boolean,
     active: Boolean,
     modifier: Modifier,
+    coverOnly: Boolean = false,
 ) {
     val track = s.current ?: return
     // ViewModel owns the selected mode; a second saveable copy can restore stale lyrics.
@@ -47,7 +48,7 @@ internal fun PlayerMediaPager(
     var demonstration by remember { mutableStateOf<Job?>(null) }
     val dragging by pager.interactionSource.collectIsDraggedAsState()
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
-    if (active) {
+    if (active && !coverOnly) {
         var userPaging by remember { mutableStateOf(false) }
         val owner = remember { Any() }
         DisposableEffect(motion, owner) {
@@ -160,7 +161,8 @@ internal fun PlayerMediaPager(
         }
     }
     Box(modifier) {
-        if (!active) cover(false)
+        if (coverOnly) cover(sharedArtwork && active)
+        else if (!active) cover(false)
         else
             HorizontalPager(
                 state = pager,

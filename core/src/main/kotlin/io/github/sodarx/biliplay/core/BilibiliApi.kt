@@ -1,6 +1,8 @@
 package io.github.sodarx.biliplay.core
 
 import java.io.IOException
+import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -38,11 +40,16 @@ class BilibiliApi(
     internal val desktopGate = kotlinx.coroutines.sync.Semaphore(2)
     internal val desktopArchives =
         java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Page<Track>>>()
+    /** Per-account identity cards resolved for notification sessions (name to face). */
+    internal val userCardCache = java.util.concurrent.ConcurrentHashMap<Long, Pair<String, String>>()
     @Volatile internal var desktopRetryAfter = 0L
     internal var desktopRotation = 0
     internal var desktopLikedRotation = 0
     private val keysLock = Mutex()
     private var keys: Triple<String, String, Long>? = null
+    private val messageDevice = UUID.randomUUID().toString().uppercase(Locale.ROOT)
+
+    internal fun messageDeviceId(): String = messageDevice
 
     internal suspend fun exchange(request: Request): String =
         suspendCancellableCoroutine { continuation ->
@@ -101,6 +108,7 @@ class BilibiliApi(
                     -352,
                     -412 -> "请求暂时受限，请稍后重试"
                     12002 -> "评论区已关闭"
+                    -10403 -> "该内容在当前地区不可用，请关闭代理或更换网络后重试"
                     else -> "请求未完成（$code）"
                 },
             )
@@ -176,27 +184,29 @@ class BilibiliApi(
         parameters: Map<String, String> = emptyMap(),
         signed: Boolean = false,
     ): JSONObject {
-        val base = endpoint(path)
         val url =
-            if (signed) {
-                val k = signingKeys()
-                base
-                    .newBuilder()
-                    .encodedQuery(
-                        WbiSigner.sign(
-                            parameters,
-                            k.first,
-                            k.second,
-                            System.currentTimeMillis() / 1000,
-                        )
-                    )
-                    .build()
-            } else
-                base
+            if (signed) signedUrl(path, parameters)
+            else
+                endpoint(path)
                     .newBuilder()
                     .apply { parameters.forEach { (k, v) -> addQueryParameter(k, v) } }
                     .build()
         return body(url, path == "x/web-interface/nav")
+    }
+
+    internal suspend fun signedUrl(path: String, parameters: Map<String, String>): HttpUrl {
+        val keys = signingKeys()
+        return endpoint(path)
+            .newBuilder()
+            .encodedQuery(
+                WbiSigner.sign(
+                    parameters,
+                    keys.first,
+                    keys.second,
+                    System.currentTimeMillis() / 1000,
+                )
+            )
+            .build()
     }
 
     private suspend fun signingKeys(): Triple<String, String, Long> = keysLock.withLock {
@@ -317,7 +327,7 @@ class BilibiliApi(
             }
         }
         if (last is ApiFailure) throw last
-        throw ApiFailure(-1, "未获得可播放音源，请重试或重新登录")
+        throw ApiFailure(-1, "未获得可播放音源，请重试；如使用代理，请关闭后再试")
     }
 
     private suspend fun pageAudio(track: Track): List<AudioSource> {
@@ -415,28 +425,41 @@ internal fun items(array: JSONArray?): List<JSONObject> =
 
 object AudioParser {
     fun parse(data: JSONObject): List<AudioSource> {
-        val dash = data.optJSONObject("dash") ?: throw ApiFailure(-1, "当前资源没有可用的独立音频")
+        val dash = data.optJSONObject("dash")
         val normal =
-            items(dash.optJSONArray("audio"))
+            items(dash?.optJSONArray("audio"))
                 .sortedWith(
                     compareByDescending<JSONObject> { it.optString("codecs").startsWith("mp4a") }
                         .thenByDescending { it.optLong("bandwidth") }
                 )
                 .mapNotNull { parseOne(it, "标准") }
-                .firstOrNull() ?: throw ApiFailure(-1, "当前资源没有可用的受支持音源")
+                .firstOrNull()
         val flac =
             dash
-                .optJSONObject("flac")
+                ?.optJSONObject("flac")
                 ?.optJSONObject("audio")
                 ?.takeIf { it.optInt("id") == 30251 }
                 ?.let { parseOne(it, "Hi-Res") }
-        return listOfNotNull(normal, flac)
+        val independent = listOfNotNull(normal, flac)
+        if (independent.isNotEmpty()) return independent
+        val legacy = items(data.optJSONArray("durl"))
+        if (legacy.isEmpty())
+            throw ApiFailure(-1, "当前资源没有可用的音源，可能受地区或版权限制；如使用代理，请关闭后重试")
+        // Segments are consecutive parts, never interchangeable backup URLs.
+        val segments = legacy.sortedBy { it.optInt("order", 1) }.map { row ->
+            val source = parseOne(row, "标准") ?: throw ApiFailure(-1, "旧格式音源包含无效分段")
+            val mime = if (data.optString("format").startsWith("flv", ignoreCase = true) ||
+                java.net.URI(source.url).path.endsWith(".flv", ignoreCase = true)) "video/x-flv" else "video/mp4"
+            AudioSegment(source.url, source.backups, row.optLong("length").coerceAtLeast(0), mime)
+        }
+        val first = segments.first()
+        return listOf(AudioSource(first.url, first.backups, "标准", first.mime, segments))
     }
 
     private fun parseOne(data: JSONObject, quality: String): AudioSource? {
         val backups = data.optJSONArray("backupUrl") ?: data.optJSONArray("backup_url")
         val urls =
-            (listOf(data.optString("baseUrl"), data.optString("base_url")) +
+            (listOf(data.optString("baseUrl"), data.optString("base_url"), data.optString("url")) +
                     (0 until (backups?.length() ?: 0)).map { backups!!.optString(it) })
                 .mapNotNull(MediaUrls::normalize)
                 .distinct()

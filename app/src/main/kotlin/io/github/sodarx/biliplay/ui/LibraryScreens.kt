@@ -80,6 +80,21 @@ internal fun LargeFolderPreview(covers: List<String>, modifier: Modifier) {
 @Composable
 internal fun FolderScreen(s: AppState, m: BiliPlayViewModel) {
     LazyColumn {
+        if (s.folderSelecting)
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "已选择 ${s.selectedFolderTracks.size} 首",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = m::selectAllFolderTracks) { Text("全选") }
+                }
+            }
         item {
             Row(
                 Modifier.fillMaxWidth().padding(16.dp),
@@ -100,7 +115,14 @@ internal fun FolderScreen(s: AppState, m: BiliPlayViewModel) {
             }
         }
         items(s.folderTracks, key = { it.bvid + ":" + it.page }) { track ->
-            FeatureTrackRow(track, m, onPlay = { m.play(track, s.folderTracks) })
+            SelectableTrackRow(
+                track,
+                selecting = s.folderSelecting,
+                selected = track.key in s.selectedFolderTracks,
+                onToggle = { m.selectFolderTrack(track.key) },
+                onPlay = { m.play(track, s.folderTracks) },
+                onMenu = { m.dialog("trackActions", track) },
+            )
         }
         item { LoadMore(s.folderHasMore, s, m) }
         if (s.folderTracks.isEmpty() && !s.loading)

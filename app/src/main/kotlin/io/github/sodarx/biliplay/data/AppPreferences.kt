@@ -10,6 +10,8 @@ data class AppearanceSettings(
     val recordSearch: Boolean = true,
     val clickPolicy: String = "append",
     val smartSongTitles: Boolean = true,
+    /** Empty means automatic: every track takes the best source the account can access. */
+    val preferredQuality: String = io.github.sodarx.biliplay.core.PlaybackQuality.Automatic,
 )
 
 class AppPreferences(context: Context, profileId: String = "guest") {
@@ -47,6 +49,11 @@ class AppPreferences(context: Context, profileId: String = "guest") {
                 it in listOf("append", "replace", "ask")
             } ?: "append",
             preferences.getBoolean("smart_song_titles", true),
+            // A new key ignores the legacy default so an upgrade starts on the best available
+            // source; only a choice made in the quality dialog writes this value.
+            io.github.sodarx.biliplay.core.PlaybackQuality.normalize(
+                preferences.getString("quality_choice", "") ?: ""
+            ),
         )
     }
 
@@ -60,6 +67,8 @@ class AppPreferences(context: Context, profileId: String = "guest") {
             .putBoolean("record_search", v.recordSearch)
             .putString("click_policy", v.clickPolicy)
             .putBoolean("smart_song_titles", v.smartSongTitles)
+            .putString("quality_choice", v.preferredQuality)
+            .remove("preferred_quality")
             .apply()
     }
 }

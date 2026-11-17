@@ -55,6 +55,7 @@ private fun comment(o: JSONObject, pinned: Boolean = false): Comment? {
         o.optLong("rcount", o.optLong("count")),
         o.optInt("action"),
         pinned,
+        CommentImages.parse(o.optJSONObject("content")),
     )
 }
 
@@ -105,11 +106,19 @@ suspend fun BilibiliApi.sendComment(
     message: String,
     root: Long = 0,
     parent: Long = 0,
+    pictures: List<CommentPicture> = emptyList(),
 ): Comment? {
-    require(message.trim().isNotEmpty() && message.length <= 1000)
+    require((message.isNotBlank() || pictures.isNotEmpty()) && message.length <= 1000)
+    require(aid > 0)
+    val imageJson = CommentImages.json(pictures)
     require(root >= 0 && parent >= 0 && (root == 0L) == (parent == 0L))
     val args =
-        mutableMapOf("type" to "1", "oid" to "$aid", "message" to message.trim(), "plat" to "1")
+        mutableMapOf("type" to "1", "oid" to "$aid", "message" to message.trim().ifBlank { "[图片]" }, "plat" to "1")
+    if (pictures.isNotEmpty()) {
+        args["pictures"] = imageJson
+        args["at_name_to_mid"] = "{}"
+        args["gaia_source"] = "main_web"
+    }
     if (root > 0) {
         args["root"] = "$root"
         args["parent"] = "$parent"

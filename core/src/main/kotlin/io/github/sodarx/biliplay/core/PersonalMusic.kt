@@ -50,30 +50,62 @@ object MusicRecommendations {
         related: List<MusicCandidate>,
         feed: List<MusicCandidate>,
         previous: List<Track> = emptyList(),
+        signals: RecommendationSignals = RecommendationSignals(),
+        seed: Int = 0,
     ): PersonalMusicSections {
         val relevant = (related + feed).distinctBy { it.track.key }
-        val likes =
-            LikedSelection.select(
-                related.map { it.track }.ifEmpty { feed.map { it.track } },
-                previous,
+        if (relevant.isEmpty()) return PersonalMusicSections(emptyList(), emptyList(), emptyList())
+        val previousKeys = previous.map { it.key }.toSet()
+        val base =
+            signals.copy(
+                recentBatches =
+                    (listOf(previousKeys) + signals.recentBatches)
+                        .filter { it.isNotEmpty() }
+                        .take(RecommendationPolicy.RecentBatches)
             )
-        val liked = likes.map { it.key }.toSet()
-        // Small genuine pools may repeat between sections; they must not leave Today empty.
-        val available = relevant.filterNot { it.track.key in liked }.ifEmpty { relevant }
+        // 猜你喜欢：个性化 + 换组优先换创作者，不重复上一组；保留候选来源顺序并轮换起点。
+        val likedCandidates =
+            related.map { it.track }.ifEmpty { feed.map { it.track } }.distinctBy { it.key }
+        val shift =
+            if (likedCandidates.isEmpty()) 0
+            else
+                ((seed % likedCandidates.size) + likedCandidates.size) % likedCandidates.size
+        val rotated = likedCandidates.drop(shift) + likedCandidates.take(shift)
+        val likes = RecommendationPolicy.ranked(rotated, 3, base, seed)
+        val likedKeys = likes.map { it.key }.toSet()
+        val available = relevant.filterNot { it.track.key in likedKeys }
+        // A tiny genuine pool may repeat between sections; it must not leave Today empty.
+        val dailyPool = available.ifEmpty { relevant }
+        val dailySignals =
+            base.copy(
+                recentBatches =
+                    (listOf(likedKeys) + base.recentBatches)
+                        .filter { it.isNotEmpty() }
+                        .take(RecommendationPolicy.RecentBatches)
+            )
+        // 今日推荐：保留平台相关度/播放量排序，但排除最近几批并保持创作者多元。
         val daily =
-            available
-                .sortedWith(
-                    compareByDescending<MusicCandidate> { it.relevance }
-                        .thenByDescending { it.plays }
-                )
-                .take(minOf(8, (available.size + 1) / 2))
-                .map { it.track }
+            RecommendationPolicy.ranked(
+                dailyPool
+                    .sortedWith(
+                        compareByDescending<MusicCandidate> { it.relevance }
+                            .thenByDescending { it.plays }
+                    )
+                    .map { it.track },
+                minOf(8, (dailyPool.size + 1) / 2),
+                dailySignals,
+                seed + 1,
+            )
         val dailyKeys = daily.map { it.key }.toSet()
+        // 更多推荐：按平台 feed 顺序，硬排除本批已展示的歌，同一批内不重复。
         val more =
-            (feed + related)
-                .distinctBy { it.track.key }
-                .filterNot { it.track.key in dailyKeys || it.track.key in liked }
-                .map { it.track }
+            RecommendationPolicy.ranked(
+                (feed + related).map { it.track },
+                relevant.size,
+                base,
+                seed + 2,
+                exclude = likedKeys + dailyKeys,
+            )
         return PersonalMusicSections(likes, daily, more)
     }
 }

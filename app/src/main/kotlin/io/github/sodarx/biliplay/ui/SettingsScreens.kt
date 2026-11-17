@@ -47,7 +47,7 @@ internal fun FeatureMine(s: AppState, m: BiliPlayViewModel) {
     ) {
         item {
             ListItem(
-                onClick = { if (s.account == null) m.startLogin() else m.navigate("profiles") },
+                onClick = { if (s.account == null) m.startLogin() else m.openOwnSpace() },
                 content = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -111,7 +111,14 @@ internal fun FeatureMine(s: AppState, m: BiliPlayViewModel) {
                                 }
                         }
                 },
-                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null) },
+                trailingContent = {
+                    IconButton(onClick = { m.navigate("profiles") }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            "账号管理",
+                        )
+                    }
+                },
             )
         }
         if (s.account != null)
@@ -174,6 +181,7 @@ internal fun FeatureMine(s: AppState, m: BiliPlayViewModel) {
 @Composable
 internal fun FeatureSettings(s: AppState, m: BiliPlayViewModel, chooseDirectory: () -> Unit) {
     val p = s.appearance
+    LaunchedEffect(Unit) { m.settingsVisible() }
     LazyColumn {
         item { SectionLabel("外观") }
         item {
@@ -200,7 +208,6 @@ internal fun FeatureSettings(s: AppState, m: BiliPlayViewModel, chooseDirectory:
         item {
             ListItem(
                 content = { Text("智能识别歌曲名称") },
-                supportingContent = { Text("显示书名号或引号内的名称") },
                 trailingContent = {
                     Switch(p.smartSongTitles, { m.appearance(p.copy(smartSongTitles = it)) })
                 },
@@ -234,6 +241,8 @@ internal fun FeatureSettings(s: AppState, m: BiliPlayViewModel, chooseDirectory:
                 onClick = { m.dialog("clickPolicy") },
             )
         }
+        item { SectionLabel("软件更新") }
+        item { AppUpdateSettings() }
         item { SectionLabel("存储") }
         item {
             FeatureEntry(
@@ -246,10 +255,15 @@ internal fun FeatureSettings(s: AppState, m: BiliPlayViewModel, chooseDirectory:
         if (s.downloadTree.isNotBlank())
             item { FeatureEntry("恢复默认保存位置", Icons.Default.Restore, onClick = m::resetDownloadTree) }
         item {
-            FeatureEntry(
-                "清除图片缓存",
-                Icons.Default.CleaningServices,
+            ListItem(
                 onClick = { m.clearImageCache() },
+                content = { Text("清除图片缓存") },
+                supportingContent = {
+                    Text(
+                        if (s.imageCacheBytes < 0) "正在计算缓存大小…"
+                        else "已占用 ${StorageSize.format(s.imageCacheBytes)}"
+                    )
+                },
             )
         }
     }
@@ -281,7 +295,7 @@ internal fun AboutScreen(m: BiliPlayViewModel) {
         item {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Bili Play", style = MaterialTheme.typography.headlineLarge)
-                Text(BuildConfig.VERSION_NAME)
+                Text("v${BuildConfig.VERSION_NAME}")
             }
         }
         item {
@@ -297,6 +311,14 @@ internal fun AboutScreen(m: BiliPlayViewModel) {
                         )
                     )
                 },
+            )
+        }
+        item {
+            FeatureEntry(
+                "哔哩哔哩",
+                Icons.Default.AccountCircle,
+                "soda_rx",
+                onClick = { m.openUploader(Uploader(3537119041554465, "soda_rx")) },
             )
         }
         item { SectionLabel("协议") }

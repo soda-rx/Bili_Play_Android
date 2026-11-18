@@ -56,7 +56,7 @@ python -B tools/check_release.py --notes <工程外的更新日志.md>
 - version.properties 是唯一来源：versionName 为公开 SemVer；versionCode 是安装升级用的递增整数。
 - app/build.gradle.kts 读取这两项，关于页显示 BuildConfig.VERSION_NAME。
 - 每次新发行，包括 alpha、beta、rc 和正式版，versionCode 都应大于已有发行。不能把 35 当成版本号 0.2.35，也不能为了匹配标签重置它。
-- 最新已发布标签 0.2.33 / 35 保持原样；当前源码为 1.0.8 / 47。1.0.0 正式安装渠道迁移属于不兼容变更，递增 MAJOR；1.0.1～1.0.7 为兼容修订，1.0.8 为兼容的交互细节修订。versionCode 继续单调递增，不重用中间验收包的内部版本。
+- 最新已发布标签 0.2.33 / 35 保持原样；当前源码为 1.0.9 / 48。1.0.0 正式安装渠道迁移属于不兼容变更，递增 MAJOR；1.0.1～1.0.8 为兼容修订，1.0.9 为兼容的播放详情封面转场修复。versionCode 继续单调递增，不重用中间验收包的内部版本。
 - tools/Build-Android.ps1 -Deliver **仅构建并签名 development 验收包**。文件扩展名改为小写 .apk，不改变隔离身份或签名，不能当成正式 Release 上传。
 - 正式构建须显式 -PDevelopmentBuild=false，使用 :app:assembleProductionRelease，身份 io.github.sodarx.biliplay。正式密钥留在工程外，固定使用 release-policy.json 的 productionSignerSha256，不能临时换成开发密钥。
 - 已核实用户提供的 0.2.33 APK 为 .development 身份，其旧签名固定在 developmentSignerSha256；原私钥丢失，不能覆盖升级。此前 0.3.1 / 0.4.0 开发验收包使用了另一签名，同样不能覆盖旧 0.2.33，不得作为正式包发布。

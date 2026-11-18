@@ -48,9 +48,11 @@ internal fun MotionRoute(
             // primary page and the player/queue keep the no-op scene transition. Leaving a normal
             // page such as librarySearch back into the queue must animate like any back navigation.
             val noSceneTransition =
-                (targetState.group == "playback" &&
-                    initialState.group in setOf("primary", "playback")) ||
-                    (initialState.group == "playback" && targetState.group == "primary")
+                CoverPresentation.suppressSceneTransition(
+                    initialState.group,
+                    targetState.group,
+                    latest.motionBack,
+                )
             (if (noSceneTransition)
                     EnterTransition.None togetherWith ExitTransition.KeepUntilTransitionsFinished
                 else if (latest.motionBack)

@@ -81,6 +81,23 @@ object CoverPresentation {
     fun sceneLayer(route: String): Float =
         if (route in listOf("player", "queue", "playback")) 1f else 0f
 
+    /**
+     * Playback entrances are animated by the vertical sheet and shared cover motion. A horizontal
+     * scene slide must not run on top of that, otherwise the cover target is measured while the
+     * sheet is still offset sideways and the artwork flashes to the wrong position. Only back
+     * navigation from a page pushed above playback (e.g. library search over the queue) keeps the
+     * ordinary reverse page transition.
+     */
+    fun suppressSceneTransition(previousGroup: String, nextGroup: String, back: Boolean): Boolean {
+        val enteringPlayback =
+            nextGroup == "playback" &&
+                (previousGroup == "playback" || previousGroup == "primary" || !back)
+        // Leaving playback back to a page is the cover returning to its dock; a horizontal slide
+        // would move the measured dock/first page while the artwork is still morphing.
+        val leavingPlayback = previousGroup == "playback" && back
+        return enteringPlayback || leavingPlayback
+    }
+
     fun capsuleSurfaceVisible(
         requested: CoverDestination,
         presented: CoverDestination,

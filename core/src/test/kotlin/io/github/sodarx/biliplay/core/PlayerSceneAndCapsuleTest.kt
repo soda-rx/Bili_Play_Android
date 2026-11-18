@@ -54,6 +54,38 @@ class PlayerSceneAndCapsuleTest {
     }
 
     @Test
+    fun playbackEntrancesDoNotRunHorizontalSceneTransitions() {
+        // Opening the player from search, folders or any other page keeps only the vertical sheet.
+        for (previous in listOf("home", "favorites", "mine", "search", "folder", "settings")) {
+            val group = if (previous in CoverPresentation.primaryRoutes) "primary" else previous
+            assertTrue(
+                "forward $previous -> player",
+                CoverPresentation.suppressSceneTransition(group, "playback", back = false),
+            )
+        }
+        // Closing the player back to any page also relies on the cover returning to its dock.
+        for (destination in listOf("primary", "search", "folder", "settings")) {
+            assertTrue(
+                "back player -> $destination",
+                CoverPresentation.suppressSceneTransition("playback", destination, back = true),
+            )
+        }
+        // Pushing search over the queue animates in, and popping it back animates out.
+        assertFalse(
+            CoverPresentation.suppressSceneTransition("playback", "librarySearch", back = false)
+        )
+        assertFalse(
+            CoverPresentation.suppressSceneTransition("librarySearch", "playback", back = true)
+        )
+        // Ordinary page navigation is unchanged.
+        assertFalse(CoverPresentation.suppressSceneTransition("primary", "search", back = false))
+        assertFalse(CoverPresentation.suppressSceneTransition("search", "primary", back = true))
+        assertFalse(
+            CoverPresentation.suppressSceneTransition("folder", "librarySearch", back = false)
+        )
+    }
+
+    @Test
     fun travellingRimEmergesMonotonicallyAndMatchesTheDockAtLanding() {
         val values =
             listOf(320f, 250f, 180f, 120f, 80f, 40f).map {

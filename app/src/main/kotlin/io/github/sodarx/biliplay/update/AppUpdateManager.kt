@@ -21,7 +21,7 @@ data class AppUpdateState(
     val progress: Int = 0,
     val ready: Boolean = false,
     val showDialog: Boolean = false,
-    val autoDownload: Boolean = true,
+    val autoDownload: Boolean = false,
     val reminders: Boolean = true,
     val message: String? = null,
 )
@@ -33,13 +33,27 @@ class AppUpdateManager(private val context: Context) {
     private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.MINUTES).build()
+
+    init {
+        // v2 defaults apply once to every install: background auto download is opt-in and update
+        // reminders are on. Explicit choices made after this migration are kept.
+        if (!preferences.getBoolean("defaults_v2", false)) {
+            preferences.edit()
+                .putBoolean("auto_download", false)
+                .putBoolean("reminders", true)
+                .putBoolean("defaults_v2", true)
+                .apply()
+        }
+    }
+
+    private val initialAutoDownload = preferences.getBoolean("auto_download", false)
     private val mutable = MutableStateFlow(AppUpdateState(
-        autoDownload = preferences.getBoolean("auto_download", true),
-        reminders = preferences.getBoolean("auto_download", true) ||
-            preferences.getBoolean("reminders", true)))
+        autoDownload = initialAutoDownload,
+        reminders = initialAutoDownload || preferences.getBoolean("reminders", true)))
     val state = mutable.asStateFlow()
     private var checking: Job? = null
     private var download: Job? = null
+    private var autoDownloadPending = false
     private var checkedAt = 0L
     private val directory get() = File(context.cacheDir, "updates")
     private fun apk(release: ReleaseUpdate) = File(directory, "Bili_Play_Android_${release.version}.apk")
@@ -48,14 +62,28 @@ class AppUpdateManager(private val context: Context) {
         preferences.edit().putBoolean("auto_download", value).apply()
         if (value) preferences.edit().putBoolean("reminders", true).apply()
         mutable.update { it.copy(autoDownload = value, reminders = if (value) true else it.reminders) }
-        if (!value) download?.cancel()
-        if (value && state.value.release != null) download()
+        if (!value) {
+            autoDownloadPending = false
+            download?.cancel()
+        } else if (state.value.release != null) {
+            // Downloads wait until the app is actively in use; launching alone must not fetch.
+            autoDownloadPending = true
+        }
+    }
+
+    /** Starts a queued automatic download only while the app is in use, never at cold start. */
+    fun startDeferredDownload() {
+        if (!autoDownloadPending || !state.value.autoDownload) return
+        if (state.value.release == null || state.value.ready || state.value.downloading) return
+        if (download?.isActive == true) return
+        autoDownloadPending = false
+        download()
     }
 
     fun reminders(value: Boolean) {
         if (!value && state.value.autoDownload) return
         preferences.edit().putBoolean("reminders", value).apply()
-        mutable.update { it.copy(reminders = value, showDialog = if (value) it.showDialog else false) }
+        mutable.update { it.copy(reminders = value) }
     }
 
     fun dismiss() { mutable.update { it.copy(showDialog = false) } }
@@ -106,7 +134,7 @@ class AppUpdateManager(private val context: Context) {
                     progress = if (same) it.progress else 0,
                     showDialog = release != null && (manual || it.reminders),
                     message = if (manual && release == null) "当前已是最新版本" else null) }
-                if (release != null && state.value.autoDownload) download()
+                autoDownloadPending = release != null && state.value.autoDownload
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) {
                 if (manual) mutable.update { it.copy(message = "检查更新失败，请稍后重试") }
@@ -129,6 +157,7 @@ class AppUpdateManager(private val context: Context) {
     }
 
     fun download(installWhenReady: ((File) -> Unit)? = null) {
+        autoDownloadPending = false
         val release = state.value.release ?: return
         if (download?.isActive == true) {
             if (installWhenReady != null) scope.launch {

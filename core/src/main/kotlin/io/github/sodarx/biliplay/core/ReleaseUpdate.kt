@@ -18,7 +18,6 @@ data class StableVersion(val major: Long, val minor: Long, val patch: Long) : Co
 
 data class ReleaseUpdate(
     val version: String,
-    val notes: String,
     val downloadUrl: String,
     val size: Long,
     val sha256: String?,
@@ -47,7 +46,7 @@ data class ReleaseUpdate(
             if (size !in 1..MaxBytes) return null
             val digest = asset.optString("digest").takeIf { it.isNotBlank() && it != "null" }
             if (digest != null && !Regex("sha256:[0-9a-fA-F]{64}").matches(digest)) return null
-            return ReleaseUpdate(tag, json.optString("body").take(6000), url, size,
+            return ReleaseUpdate(tag, url, size,
                 digest?.substringAfter(':')?.lowercase())
         }
 

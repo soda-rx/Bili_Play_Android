@@ -58,6 +58,7 @@ data class AppState(
     val duration: Long = 0,
     val speed: Float = 1f,
     val mode: QueueMode = QueueMode.RepeatAll,
+    val sleepTimerEndsAt: Long = 0L,
     val appearance: AppearanceSettings = AppearanceSettings(),
     val account: Account? = null,
     val profiles: List<ProfileInfo> = emptyList(),

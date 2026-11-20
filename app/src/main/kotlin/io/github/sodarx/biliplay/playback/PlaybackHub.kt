@@ -1,6 +1,7 @@
 package io.github.sodarx.biliplay.playback
 
 import android.net.Uri
+import android.os.SystemClock
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
@@ -28,6 +29,7 @@ data class PlaybackSnapshot(
     val mode: QueueMode = QueueMode.RepeatAll,
     val loading: Boolean = false,
     val error: String? = null,
+    val sleepTimerEndsAt: Long = 0L,
     val profileId: String = "guest",
 )
 
@@ -47,6 +49,7 @@ class PlaybackHub(private val repository: AppRepository) {
     private var playEpoch = 0L
     private var restored = false
     private var lastSave = 0L
+    private var sleepTimerJob: Job? = null
 
     private data class Save(
         val profile: Profile,
@@ -92,6 +95,8 @@ class PlaybackHub(private val repository: AppRepository) {
                     done.await()
                 }
                 cancelLoading()
+                sleepTimerJob?.cancel()
+                sleepTimerJob = null
                 failedTracks.clear()
                 activeSource = null
                 player?.stop()
@@ -402,10 +407,30 @@ class PlaybackHub(private val repository: AppRepository) {
 
     fun stop() {
         load?.cancel()
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
         player?.pause()
         player?.clearMediaItems()
-        mutable.update { it.copy(playing = false, loading = false) }
+        mutable.update { it.copy(playing = false, loading = false, sleepTimerEndsAt = 0L) }
         persist()
+    }
+
+    /** Null clears the timer; minutes are clamped through [SleepTimer]. */
+    fun sleepTimer(minutes: Int?) {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        if (minutes == null) {
+            mutable.update { it.copy(sleepTimerEndsAt = 0L) }
+            return
+        }
+        val endsAt = SleepTimer.endsAt(SystemClock.elapsedRealtime(), minutes) ?: return
+        mutable.update { it.copy(sleepTimerEndsAt = endsAt) }
+        sleepTimerJob = scope.launch {
+            delay(minutes * 60_000L)
+            if (mutable.value.sleepTimerEndsAt != endsAt) return@launch
+            player?.pause()
+            mutable.update { it.copy(sleepTimerEndsAt = 0L) }
+        }
     }
 
     fun seek(position: Long) {
@@ -506,6 +531,7 @@ class PlaybackHub(private val repository: AppRepository) {
                 origin = if (queue.isEmpty()) null else it.origin,
                 speed = it.speed,
                 mode = it.mode,
+                sleepTimerEndsAt = it.sleepTimerEndsAt,
                 profileId = it.profileId,
             )
         }
@@ -514,7 +540,12 @@ class PlaybackHub(private val repository: AppRepository) {
         persist()
     }
 
-    fun clearQueue() = resetActualPlayback()
+    fun clearQueue() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        mutable.update { it.copy(sleepTimerEndsAt = 0L) }
+        resetActualPlayback()
+    }
 
     fun quality(index: Int) {
         val s = state.value

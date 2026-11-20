@@ -549,6 +549,9 @@ fun BiliPlayRoot(sharedText: String?, model: BiliPlayViewModel = viewModel()) {
                                                             Icon(Icons.Default.Translate, "字幕语言")
                                                         }
                                                     }
+                                                    SleepTimerAction(screen.sleepTimerEndsAt) {
+                                                        model.dialog("sleepTimer")
+                                                    }
                                                     IconButton(
                                                         onClick = { model.navigate("queue") }
                                                     ) {

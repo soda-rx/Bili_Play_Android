@@ -159,6 +159,7 @@ internal fun FeatureDialogs(s: AppState, m: BiliPlayViewModel, onDownload: () ->
         return
     }
     when (type) {
+        "sleepTimer" -> SleepTimerDialog(s, m)
         "queueMode" ->
             FeatureDialog("播放方式", m) {
                 Column {

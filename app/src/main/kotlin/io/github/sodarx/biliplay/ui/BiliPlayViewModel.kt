@@ -189,6 +189,7 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
                         qualityIndex = s.qualityIndex,
                         speed = s.speed,
                         mode = s.mode,
+                        sleepTimerEndsAt = s.sleepTimerEndsAt,
                         loading = operations > 0 || s.loading,
                     )
                 }
@@ -1024,6 +1025,8 @@ class BiliPlayViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun seek(position: Long) = hub.seek(position)
+
+    fun sleepTimer(minutes: Int?) = hub.sleepTimer(minutes)
 
     fun setSpeed(value: Float) = hub.speed(value)
 
